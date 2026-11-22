@@ -1,106 +1,148 @@
-//! Reed–Solomon decoding over CTDB's GF(2^16).
+/*!
+# Rip Rip Hooray: Reed–Solomon decoding over CTDB's GF(2^16).
+*/
 
-/// Number of nonzero field elements.
-const ORDER: usize = 65_535;
-/// CTDB's field polynomial, including its leading term.
+/// # Number of Nonzero Field Elements.
+const ORDER: usize = u16::MAX as usize;
+
+/// # CTDB's Field Polynomial (w/ Leading Term).
 const POLYNOMIAL: u32 = 0x1_100b;
-/// Largest syndrome record supported by the CTDB service.
+
+/// # Largest Syndrome Record Supported by CTDB.
 pub(super) const MAX_PARITY: usize = 16;
 
-/// Field arithmetic with primitive element 2.
-pub(super) struct Field {
-	/// Discrete logarithms to base two.
-	log: Vec<usize>,
-	/// Powers of two, repeated to allow a lookup without reduction.
-	exp: Vec<u16>,
-}
+#[expect(clippy::cast_possible_truncation, reason = "False positive.")]
+/// # Powers of Two.
+///
+/// Note these are duplicated to allow lookup without reduction.
+static EXP: [u16; 2 * ORDER + 1] = {
+	let mut exp = [0_u16; 2 * ORDER + 1];
+	let mut value: u32 = 1;
+	let mut power = 0;
+	while power < ORDER {
+		assert!(value <= u16::MAX as u32, "BUG: value would truncate!");
+		exp[power] = value as u16;
+		exp[power + ORDER] = value as u16;
+
+		power += 1;
+		value <<= 1;
+		if value & 0x1_0000 != 0 { value ^= POLYNOMIAL; }
+	}
+	exp
+};
+
+#[expect(clippy::cast_possible_truncation, reason = "False positive.")]
+/// # Discrete Base-2 Log.
+static LOG: [u16; ORDER + 1] = {
+	let mut log = [0_u16; ORDER + 1];
+	let mut value: u32 = 1;
+	let mut power = 0;
+	while power < ORDER {
+		assert!(power <= u16::MAX as usize, "BUG: power would truncate!");
+		log[value as usize] = power as u16;
+
+		power += 1;
+		value <<= 1;
+		if value & 0x1_0000 != 0 { value ^= POLYNOMIAL; }
+	}
+	log
+};
+
+/// # Field Arithmetic With Primitive Element 2.
+pub(super) struct Field;
 
 impl Field {
-	/// Generate lookup tables using the CTDB primitive polynomial.
-	pub(super) fn new() -> Self {
-		let mut log = vec![0; ORDER + 1];
-		let mut exp = Vec::with_capacity(2 * ORDER);
-		let mut value = 1_u32;
-		for power in 0..ORDER {
-			let element = u16::try_from(value).expect("reduced field element");
-			log[usize::from(element)] = power;
-			exp.push(element);
-			value <<= 1;
-			if value & 0x1_0000 != 0 { value ^= POLYNOMIAL; }
-		}
-		exp.extend_from_within(..);
-		Self { log, exp }
-	}
+	/// # Evaluate the Primitive Element to the Given Power.
+	pub(super) const fn alpha(power: usize) -> u16 { EXP[power % ORDER] }
 
-	/// Evaluate the primitive element to the given power.
-	pub(super) fn alpha(&self, power: usize) -> u16 { self.exp[power % ORDER] }
-
-	/// Multiply by a power of the primitive element.
-	pub(super) fn mul_alpha(&self, value: u16, power: usize) -> u16 {
+	/// # Multiply by a Power of the Primitive Element.
+	pub(super) const fn mul_alpha(value: u16, power: usize) -> u16 {
 		if value == 0 { 0 }
-		else { self.exp[self.log[usize::from(value)] + power % ORDER] }
+		else { EXP[LOG[value as usize] as usize + power % ORDER] }
 	}
 
-	/// Multiply field elements.
-	fn mul(&self, a: u16, b: u16) -> u16 {
+	/// # Multiply Field Elements.
+	const fn mul(a: u16, b: u16) -> u16 {
 		if a == 0 || b == 0 { 0 }
-		else { self.exp[self.log[usize::from(a)] + self.log[usize::from(b)]] }
+		else { EXP[LOG[a as usize] as usize + LOG[b as usize] as usize] }
 	}
 
-	/// Divide by a nonzero field element.
-	fn div(&self, a: u16, b: u16) -> u16 {
-		debug_assert_ne!(b, 0, "field division by zero");
-		if a == 0 { 0 }
-		else { self.exp[ORDER + self.log[usize::from(a)] - self.log[usize::from(b)]] }
+	/// # Divide by a Nonzero Field Element.
+	const fn div(a: u16, b: u16) -> u16 {
+		debug_assert!(b != 0, "Bug: field division by zero.");
+
+		if a == 0 || b == 0 { 0 }
+		else { EXP[ORDER + LOG[a as usize] as usize - LOG[b as usize] as usize] }
 	}
 
-	/// A fixed field multiplication can be evaluated with two byte lookups.
-	pub(super) fn multiplier(&self, factor: u16) -> [[u16; 256]; 2] {
-		std::array::from_fn(|byte| {
-			std::array::from_fn(|value| {
-				self.mul(factor, u16::try_from(value).expect("one byte") << (byte * 8))
-			})
-		})
+	#[expect(clippy::cast_possible_truncation, reason = "False positive.")]
+	/// # Fixed Field Multiplication For 2-Byte Lookups.
+	pub(super) const fn multiplier(factor: u16) -> [[u16; 256]; 2] {
+		let mut tables = [[0_u16; 256]; 2];
+		let mut byte = 0;
+		while byte < 2 {
+			let mut value = 0_usize;
+			while value < 256 {
+				tables[byte][value] = Self::mul(factor, (value as u16) << (byte * 8));
+				value += 1;
+			}
+			byte += 1;
+		}
+		tables
 	}
 
+	/// # Decode.
+	///
 	/// Find errors in a shortened codeword whose first word has degree
-	/// `words - 1`. Return (position, XOR magnitude) for changed words.
+	/// `words - 1`.
+	///
+	/// Returns position and XOR magnitude for the changed words, or `None` on
+	/// failure.
 	pub(super) fn decode(
-		&self,
 		syndromes: &[u16],
 		words: usize,
 		erasures: &[usize],
 	) -> Option<Vec<(usize, u16)>> {
-		if syndromes.iter().all(|&s| s == 0) { return Some(Vec::new()); }
-		if erasures.len() > syndromes.len() { return None; }
+		// Short circuit: remind compiler that words fits u16.
+		if ORDER < words { return None; }
+
+		// Short circuit: bail if the the syndrome is empty or all zero.
+		if syndromes.is_empty() || syndromes.iter().all(|&s| s == 0) {
+			return Some(Vec::new());
+		}
+
+		// Short circuit: bail if there are too many erasures or syndromes.
+		if syndromes.len() < erasures.len() || MAX_PARITY < syndromes.len() {
+			return None;
+		}
 
 		// For each known location X, taking S[j+1] + X*S[j] cancels
 		// its contribution and leaves a shorter sequence for the unknowns.
 		let mut reduced = [0; MAX_PARITY];
 		let mut remaining = syndromes.len();
 		reduced[..remaining].copy_from_slice(syndromes);
-		let mut positions = Vec::from(erasures);
 		for &position in erasures {
-			let x = self.alpha(words - 1 - position);
+			if position >= words { return None; }
+			let x = Self::alpha(words - 1 - position);
 			for j in 0..remaining - 1 {
-				reduced[j] = reduced[j + 1] ^ self.mul(x, reduced[j]);
+				reduced[j] = reduced[j + 1] ^ Self::mul(x, reduced[j]);
 			}
 			remaining -= 1;
 		}
 
-		let (locator, degree) = self.recurrence(&reduced[..remaining]);
+		let mut positions = erasures.to_vec();
+		let (locator, degree) = Self::recurrence(&reduced[..remaining]);
 		if 2 * degree > remaining || locator[degree] == 0 { return None; }
 		if degree == 1 {
-			let power = self.log[usize::from(locator[1])];
-			if power >= words { return None; }
-			positions.push(words - 1 - power);
+			let power = LOG[usize::from(locator[1])] as usize;
+			positions.push(words.checked_sub(1 + power)?);
 		}
 		else if degree > 1 {
-			if !self.splits(&locator[..=degree]) { return None; }
+			if ! Self::splits(&locator[..=degree]) { return None; }
 			for power in 0..words {
-				let inverse = self.alpha(ORDER - power);
+				let inverse = Self::alpha(ORDER - power);
 				let value = locator[..=degree].iter().rev().fold(0, |sum, &term| {
-					self.mul(sum, inverse) ^ term
+					Self::mul(sum, inverse) ^ term
 				});
 				if value == 0 {
 					positions.push(words - 1 - power);
@@ -109,7 +151,10 @@ impl Field {
 			}
 		}
 		positions.sort_unstable();
-		if positions.len() != erasures.len() + degree ||
+
+		// Short circuit: bail if the positions exceed the degree or overlap.
+		if
+			positions.len() != erasures.len() + degree ||
 			positions.windows(2).any(|pair| pair[0] == pair[1])
 		{
 			return None;
@@ -121,7 +166,7 @@ impl Field {
 		let count = positions.len();
 		for (row, equation) in matrix[..count].iter_mut().enumerate() {
 			for (col, &position) in positions.iter().enumerate() {
-				equation[col] = self.alpha(row * (words - 1 - position));
+				equation[col] = Self::alpha(row * (words - 1 - position));
 			}
 			equation[count] = syndromes[row];
 		}
@@ -130,47 +175,54 @@ impl Field {
 			matrix.swap(pivot, row);
 			let divisor = matrix[pivot][pivot];
 			for value in &mut matrix[pivot][pivot..=count] {
-				*value = self.div(*value, divisor);
+				*value = Self::div(*value, divisor);
 			}
 			let normalized = matrix[pivot];
 			for (row, equation) in matrix[..count].iter_mut().enumerate() {
 				if row == pivot { continue; }
 				let factor = equation[pivot];
 				for col in pivot..=count {
-					equation[col] ^= self.mul(factor, normalized[col]);
+					equation[col] ^= Self::mul(factor, normalized[col]);
 				}
 			}
 		}
-		let changes: Vec<_> = positions.into_iter().zip(matrix.iter().map(|row| row[count]))
-			.filter(|&(_, magnitude)| magnitude != 0).collect();
+
+		// Find the changes and return them if expected.
+		let changes: Vec<_> = positions.into_iter()
+			.zip(matrix.iter().map(|row| row[count]))
+			.filter(|&(_, magnitude)| magnitude != 0)
+			.collect();
 		for (root, &expected) in syndromes.iter().enumerate() {
 			let actual = changes.iter().fold(0, |sum, &(position, magnitude)| {
-				sum ^ self.mul(magnitude, self.alpha(root * (words - 1 - position)))
+				sum ^ Self::mul(magnitude, Self::alpha(root * (words - 1 - position)))
 			});
 			if actual != expected { return None; }
 		}
 		Some(changes)
 	}
 
-	/// Every valid locator divides x^(2^16) + x. Check this invariant before
-	/// scanning thousands of possible positions for a wrong pressing alignment.
-	fn splits(&self, locator: &[u16]) -> bool {
+	/// # Splits.
+	///
+	/// Every valid locator divides `x^(2^16) + x`. Check this invariant before
+	/// scanning thousands of possible positions for a wrong pressing alignment
+	/// (while also proving each root is unique).
+	fn splits(locator: &[u16]) -> bool {
 		let degree = locator.len() - 1;
 		let mut polynomial = [0; MAX_PARITY];
 		polynomial[1] = 1;
 		let mut modulus = [0; MAX_PARITY];
 		for (out, &term) in modulus[..degree].iter_mut().zip(locator) {
-			*out = self.div(term, locator[degree]);
+			*out = Self::div(term, locator[degree]);
 		}
 		for _ in 0..16 {
 			let mut square = [0; 2 * MAX_PARITY];
 			for (i, &value) in polynomial[..degree].iter().enumerate() {
-				square[2 * i] = self.mul(value, value);
+				square[2 * i] = Self::mul(value, value);
 			}
 			for i in (degree..2 * degree - 1).rev() {
 				let factor = square[i];
 				for (term, &coefficient) in square[i - degree..i].iter_mut().zip(&modulus) {
-					*term ^= self.mul(factor, coefficient);
+					*term ^= Self::mul(factor, coefficient);
 				}
 			}
 			polynomial[..degree].copy_from_slice(&square[..degree]);
@@ -179,8 +231,10 @@ impl Field {
 		polynomial[..degree].iter().all(|&term| term == 0)
 	}
 
-	/// Berlekamp–Massey shortest recurrence for a sequence of field elements.
-	fn recurrence(&self, sequence: &[u16]) -> ([u16; MAX_PARITY + 1], usize) {
+	/// # Berlekamp–Massey Shortest Recurrence.
+	///
+	/// Find and return the shortest recurrence for a sequence of field elements.
+	fn recurrence(sequence: &[u16]) -> ([u16; MAX_PARITY + 1], usize) {
 		let mut current = [0; MAX_PARITY + 1];
 		current[0] = 1;
 		let mut previous = current;
@@ -189,7 +243,7 @@ impl Field {
 		let mut last = 1;
 		for (n, &symbol) in sequence.iter().enumerate() {
 			let discrepancy = (1..=degree).fold(symbol, |sum, i| {
-				sum ^ self.mul(current[i], sequence[n - i])
+				sum ^ Self::mul(current[i], sequence[n - i])
 			});
 			if discrepancy == 0 {
 				distance += 1;
@@ -197,9 +251,9 @@ impl Field {
 			}
 
 			let before = current;
-			let scale = self.div(discrepancy, last);
+			let scale = Self::div(discrepancy, last);
 			for (term, &prior) in current[distance..].iter_mut().zip(previous.iter()) {
-				*term ^= self.mul(scale, prior);
+				*term ^= Self::mul(scale, prior);
 			}
 			if degree * 2 <= n {
 				previous = before;

@@ -1,12 +1,25 @@
 //! Deterministic corruption cases with independent reference syndromes.
 
 use super::{
-	STRIDE, lookup::Entry, pcm_frame,
-	repair::{Geometry, Quality, Rejection, Snapshot, matches_tracks, unchanged_crcs},
-	rs::{Field, MAX_PARITY},
+	lookup::Entry,
+	pcm_frame,
+	repair::{
+		Geometry,
+		matches_tracks,
+		Quality,
+		Rejection,
+		Snapshot,
+		unchanged_crcs,
+	},
+	rs::MAX_PARITY,
+	STRIDE,
 };
 use crate::KillSwitch;
-use std::sync::{Arc, LazyLock, atomic::AtomicBool};
+use std::sync::{
+	Arc,
+	atomic::AtomicBool,
+	LazyLock,
+};
 
 static ACTIVE: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 const SECTOR: usize = 588;
@@ -85,7 +98,6 @@ fn record(pcm: &[u16], geometry: Geometry, offset: isize, split: usize) -> Entry
 /// A whole-sector burst straddles a track boundary and one interleave wrap.
 #[test]
 fn interleaved_sectors_and_pressing_offsets() {
-	let field = Field::new();
 	let frames = 43 * SECTOR;
 	let geometry = Geometry::new(frames, 3 * SECTOR).expect("test geometry");
 	let original = fixture(frames);
@@ -106,7 +118,7 @@ fn interleaved_sectors_and_pressing_offsets() {
 			flags[frame] = Quality::Weak;
 		}
 		damaged[2 * (split + 127)] ^= 0x080d;
-		let snapshot = Snapshot::new(&field, geometry, &damaged, &flags, 8, kill_switch())
+		let snapshot = Snapshot::new(geometry, &damaged, &flags, 8, kill_switch())
 			.expect("test snapshot");
 		let capacity = snapshot.capacity(offset, 8);
 		assert_eq!(capacity.max_erasures, 1, "a sector spans distinct codewords");
@@ -120,7 +132,6 @@ fn interleaved_sectors_and_pressing_offsets() {
 
 #[test]
 fn errors_erasures_and_mixed_capacity_boundaries() {
-	let field = Field::new();
 	let geometry = Geometry::new(83 * 9 + 4, 9).expect("test geometry");
 	let frames = 83 * 9 + 4;
 	let original = fixture(frames);
@@ -139,7 +150,7 @@ fn errors_erasures_and_mixed_capacity_boundaries() {
 			damaged[frame * 2] ^= 0xb351;
 			if i < erasures { flags[frame] = Quality::Erasure; }
 		}
-		let snapshot = Snapshot::new(&field, geometry, &damaged, &flags, MAX_PARITY, kill_switch())
+		let snapshot = Snapshot::new(geometry, &damaged, &flags, MAX_PARITY, kill_switch())
 			.expect("test snapshot");
 		let capacity = snapshot.capacity(0, MAX_PARITY);
 		assert_eq!(capacity.max_erasures, erasures, "same-lane concentration");
@@ -154,7 +165,6 @@ fn errors_erasures_and_mixed_capacity_boundaries() {
 
 #[test]
 fn checksum_and_protected_samples_gate_acceptance() {
-	let field = Field::new();
 	let frames = 503;
 	let geometry = Geometry::new(frames, 26).expect("test geometry");
 	let original = fixture(frames);
@@ -166,11 +176,11 @@ fn checksum_and_protected_samples_gate_acceptance() {
 	flags[0] = Quality::Erasure;
 	flags[52] = Quality::Trusted;
 	let mut entry = record(&original, geometry, 0, 251);
-	let snapshot = Snapshot::new(&field, geometry, &damaged, &flags, 8, kill_switch())
+	let snapshot = Snapshot::new(geometry, &damaged, &flags, 8, kill_switch())
 		.expect("test snapshot");
 	assert!(snapshot.find(&entry, &parity, kill_switch()).is_err(), "preserve verified PCM");
 	flags[52] = Quality::Erasure;
-	let snapshot = Snapshot::new(&field, geometry, &damaged, &flags, 8, kill_switch())
+	let snapshot = Snapshot::new(geometry, &damaged, &flags, 8, kill_switch())
 		.expect("test snapshot");
 	assert_eq!(snapshot.capacity(0, 8).outside, 1, "report an uncovered drive error");
 	entry.disc_crc ^= 1;
@@ -187,7 +197,6 @@ fn checksum_and_protected_samples_gate_acceptance() {
 
 #[test]
 fn false_erasure_hints_do_not_block_a_verified_error_only_repair() {
-	let field = Field::new();
 	let frames = 609;
 	let geometry = Geometry::new(frames, 31).unwrap();
 	let original = fixture(frames);
@@ -212,7 +221,7 @@ fn false_erasure_hints_do_not_block_a_verified_error_only_repair() {
 	damaged[lane_frame(1) * 2] ^= generator[1];
 	flags[lane_frame(2)] = Quality::Erasure;
 	flags[lane_frame(3)] = Quality::Erasure;
-	let snapshot = Snapshot::new(&field, geometry, &damaged, &flags, 4, kill_switch()).unwrap();
+	let snapshot = Snapshot::new(geometry, &damaged, &flags, 4, kill_switch()).unwrap();
 	let repair = snapshot.find(&entry, &parity, kill_switch()).expect("CRC selects the actual repair");
 	for (at, delta) in repair.corrections { damaged[at] ^= delta; }
 	assert!(bytes(&damaged) == bytes(&original), "the right byte values survive misleading C2");
@@ -269,7 +278,6 @@ fn verified_checkpoint_keeps_only_reachable_guards_and_htoa_pending() {
 
 #[test]
 fn rejects_crc_valid_patches_at_ambiguous_offsets() {
-	let field = Field::new();
 	let geometry = Geometry::new(260, 10).unwrap();
 	let mut original = vec![0; 520];
 	original[211] = 0x7e55;
@@ -277,7 +285,7 @@ fn rejects_crc_valid_patches_at_ambiguous_offsets() {
 	let quality = vec![Quality::Likely; 260];
 	let entry = record(&original, geometry, 0, 130);
 	let parity = reference(&original, geometry, 0, 4);
-	let snapshot = Snapshot::new(&field, geometry, &damaged, &quality, 4, kill_switch())
+	let snapshot = Snapshot::new(geometry, &damaged, &quality, 4, kill_switch())
 		.expect("test snapshot");
 	assert_eq!(snapshot.find(&entry, &parity, kill_switch()).err(), Some(Rejection::Ambiguous),
 		"the same pulse can be synthesized at different positions relative to the local rip");
@@ -362,8 +370,7 @@ fn physical_cd_ctdb_parity() {
 		alter(frame, false, Quality::Weak);
 	}
 
-	let field = Field::new();
-	let snapshot = Snapshot::new(&field, geometry, &damaged, &flags, MAX_PARITY, kill_switch())
+	let snapshot = Snapshot::new(geometry, &damaged, &flags, MAX_PARITY, kill_switch())
 		.expect("physical snapshot");
 	let repair = snapshot.find(&entry, &parity, kill_switch()).expect("repair using live CTDB parity");
 	assert_eq!(repair.offset, offset, "parity and CRC independently agree on the offset");
@@ -378,7 +385,7 @@ fn physical_cd_ctdb_parity() {
 		damaged[frame * 2] ^= 0x6e3b;
 		flags[frame] = Quality::Erasure;
 	}
-	let snapshot = Snapshot::new(&field, geometry, &damaged, &flags, MAX_PARITY, kill_switch())
+	let snapshot = Snapshot::new(geometry, &damaged, &flags, MAX_PARITY, kill_switch())
 		.expect("physical snapshot");
 	assert_eq!(snapshot.capacity(offset, MAX_PARITY).max_erasures, 17, "overloaded lane");
 	assert!(snapshot.find(&entry, &parity, kill_switch()).is_err(),

@@ -172,8 +172,6 @@ impl LaneHints {
 
 /// The reusable unshifted syndromes and quality distribution of one snapshot.
 pub(super) struct Snapshot<'a> {
-	/// Field shared by syndrome preparation and RS decoding.
-	field: &'a Field,
 	/// Image dimensions and protected window.
 	geometry: Geometry,
 	/// The original PCM, referenced for the checksums and offset scan.
@@ -188,7 +186,7 @@ pub(super) struct Snapshot<'a> {
 
 impl<'a> Snapshot<'a> {
 	/// Evaluate each unshifted lane once, independent of the lookup entries.
-	pub(super) fn new(field: &'a Field, geometry: Geometry, pcm: &'a [u16],
+	pub(super) fn new(geometry: Geometry, pcm: &'a [u16],
 		quality: &'a [Quality], roots: usize, killed: KillSwitch) -> Option<Self> {
 		let lanes = geometry.lanes();
 		let range = geometry.window(0);
@@ -196,7 +194,7 @@ impl<'a> Snapshot<'a> {
 		let mut syndromes = vec![0_u16; lanes * roots];
 		for (root, sums) in syndromes.chunks_exact_mut(lanes).enumerate() {
 			if killed.killed() { return None; }
-			let [low, high] = field.multiplier(field.alpha(root));
+			let [low, high] = Field::multiplier(Field::alpha(root));
 			for row in samples.chunks_exact(lanes) {
 				for (sum, &symbol) in sums.iter_mut().zip(row) {
 					let [lo, hi] = sum.to_le_bytes();
@@ -208,7 +206,7 @@ impl<'a> Snapshot<'a> {
 		for (row, quality) in quality[range].chunks_exact(geometry.stride).enumerate() {
 			for (hint, &quality) in hints.iter_mut().zip(quality) { hint.remember(row, quality); }
 		}
-		Some(Self { field, geometry, pcm, quality, syndromes, hints })
+		Some(Self { geometry, pcm, quality, syndromes, hints })
 	}
 
 	/// Assess the hard erasure and unknown-error bounds separately.
@@ -332,7 +330,7 @@ impl<'a> Snapshot<'a> {
 			Hints::Suspect => [suspect, erased.filter(|_| hint.erasures != 0), unknown],
 		};
 		orders.into_iter().flatten().find_map(|rows| {
-			self.field.decode(&delta[..roots], self.geometry.rows, rows)
+			Field::decode(&delta[..roots], self.geometry.rows, rows)
 				.filter(|patch| patch.iter().all(|&(row, _)| {
 					self.quality[first_frame + row * self.geometry.stride] != Quality::Trusted
 				}))
@@ -347,11 +345,11 @@ impl<'a> Snapshot<'a> {
 		let last = self.geometry.rows * lanes + lane;
 		let leading_power = root * (self.geometry.rows - 1);
 		if start < lanes {
-			self.field.mul_alpha(base ^ self.pcm[last], 65_535 - root) ^
-				self.field.mul_alpha(self.pcm[lane], leading_power)
+			Field::mul_alpha(base ^ self.pcm[last], 65_535 - root) ^
+				Field::mul_alpha(self.pcm[lane], leading_power)
 		}
 		else if start >= 2 * lanes {
-			self.field.mul_alpha(base ^ self.field.mul_alpha(self.pcm[lanes + lane], leading_power), root) ^
+			Field::mul_alpha(base ^ Field::mul_alpha(self.pcm[lanes + lane], leading_power), root) ^
 				self.pcm[last + lanes]
 		}
 		else { base }

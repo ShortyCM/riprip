@@ -11,7 +11,6 @@ use super::verify_track;
 use crate::{KillSwitch, RipOptions, RipSample, RipState, SAMPLES_PER_SECTOR, SavedRips};
 use cdtoc::{Toc, Track};
 use repair::{Geometry, Quality, Rejection, Repair, Snapshot, checksum, matches_tracks, unchanged_crcs};
-use rs::Field;
 use std::{collections::BTreeMap, ops::Range};
 
 /// The standard CTDB stride in stereo frames.
@@ -75,8 +74,6 @@ pub(super) struct Outcome {
 
 /// Keep lookup results and downloads for one rip so successive passes reuse them.
 pub(super) struct Session {
-	/// Arithmetic reused across checkpoints.
-	field: Field,
 	/// Compatible records from the first lookup.
 	entries: Option<Vec<lookup::Entry>>,
 	/// Download results retained for this rip.
@@ -87,8 +84,8 @@ pub(super) struct Session {
 
 impl Session {
 	/// Start an independent CTDB session for the current disc.
-	pub(super) fn new() -> Self {
-		Self { field: Field::new(), entries: None, parity: BTreeMap::new(), last_repair: None }
+	pub(super) const fn new() -> Self {
+		Self { entries: None, parity: BTreeMap::new(), last_repair: None }
 	}
 
 	/// Validate and publish the currently saved evidence, if possible.
@@ -276,7 +273,7 @@ fn run_inner(session: &mut Session, toc: &Toc, opts: &RipOptions, killed: KillSw
 		}
 		else {
 			if !assess && max_roots == 0 { return Err("no usable CTDB parity".into()); }
-			let snapshot = Snapshot::new(&session.field, geometry, &audio.pcm, &audio.quality, max_roots, killed)
+			let snapshot = Snapshot::new(geometry, &audio.pcm, &audio.quality, max_roots, killed)
 				.ok_or("calculation cancelled")?;
 			let Some(candidate) = find_repair(&snapshot, entries, &mut session.parity, assess,
 				already_verified.is_some(), killed)?
