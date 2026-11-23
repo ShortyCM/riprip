@@ -8,16 +8,7 @@ use std::{fs, io::{self, Read, Seek, SeekFrom}, ops::Range, path::{Path, PathBuf
 /// Bind a verified export to its bytes and the original disc and track.
 const MARKER_MAGIC: [u8; 8] = *b"RRCTDB01";
 
-/// Serialize WAV exports and repair publication for one disc.
-pub(in crate::rip) fn lock(toc: &Toc) -> Result<fs::File, crate::RipRipError> {
-	let path = cache_path(format!("{CACHE_SCRATCH}/{}__export.lock", cache_prefix(toc)))?;
-	let error = |_| crate::RipRipError::CachePath(path.to_string_lossy().into_owned());
-	if let Some(parent) = path.parent() { fs::create_dir_all(parent).map_err(error)?; }
-	let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
-		.open(&path).map_err(error)?;
-	lock.lock().map_err(error)?;
-	Ok(lock)
-}
+
 
 /// Confidence of a previously repaired WAV whose bytes still match the export.
 pub(in crate::rip) fn confidence(toc: &Toc, track: Track, wav: &Path) -> Option<u16> {
@@ -35,7 +26,6 @@ pub(in crate::rip) fn confidence(toc: &Toc, track: Track, wav: &Path) -> Option<
 /// Write every affected or missing WAV before replacing any normal output.
 pub(super) fn publish(toc: &Toc, killed: KillSwitch, audio: &Audio, repair: &Repair,
 	window: Range<usize>, confidence: u16, refresh: &[u8]) -> Result<SavedRips, String> {
-	let _lock = lock(toc).map_err(|err| err.to_string())?;
 	let first = toc.audio_tracks().next().ok_or("no audio tracks")?;
 	let path = track_path(toc, first).map_err(|err| err.to_string())?;
 	let parent = path.parent().ok_or("missing output directory")?;

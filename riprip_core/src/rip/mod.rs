@@ -781,7 +781,6 @@ impl RipEntry {
 
 	/// Prefer an already verified WAV to a resumed, unverified physical export.
 	fn export_track(&mut self, state: &RipState, opts: &RipOptions) -> Result<(), RipRipError> {
-		let _lock = ctdb::output::lock(state.toc()).ok();
 		let path = crate::cache::track_path(state.toc(), self.track)?;
 		if opts.resume() && opts.confidence() > max_confidence(self.ar, self.ctdb) &&
 			let Some(confidence) = ctdb::output::confidence(state.toc(), self.track, &path)
