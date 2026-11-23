@@ -78,7 +78,7 @@ fn parse(bytes: &[u8], toc: &Toc, lengths: &[usize]) -> Option<Vec<Entry>> {
 /// Download the complete record, with rows of little-endian words per root.
 pub(super) fn parity(entry: &Entry) -> Result<Vec<u16>, String> {
 	let url = entry.parity_url.as_deref().ok_or("no supported parity URL")?;
-	let bytes = cache_path(format!("{CACHE_SCRATCH}/ctdb-parity-{}.bin", entry.id))
+	let bytes = cache_path(format!("{CACHE_SCRATCH}/ctdb-parity__{}.bin", entry.id))
 		.ok()
 		.and_then(|dst| fetch(&dst, Some(url)))
 		.ok_or("unable to fetech parity.")?;
