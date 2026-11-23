@@ -134,7 +134,7 @@ impl RipState {
 	/// Open an existing state for CTDB without resetting counts or creating a cache.
 	pub(super) fn read_existing(toc: &Toc, track: Track, opts: &RipOptions)
 	-> Result<Option<Self>, RipRipError> {
-		let path = crate::cache::state_read_path(toc, track).map_err(|_| RipRipError::Cache)?;
+		let path = state_path(toc, track).map_err(|_| RipRipError::Cache)?;
 		match path.try_exists() {
 			Ok(false) => Ok(None),
 			Err(_) => Err(RipRipError::StateCorrupt(track.number())),

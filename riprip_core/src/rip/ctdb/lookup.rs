@@ -1,12 +1,18 @@
 //! CTDB v3 lookup and syndrome records.
 
+use crate::{
+	cache_path,
+	CACHE_SCRATCH,
+	ctdb_lookup_path,
+	fetch,
+};
+use cdtoc::{
+	CtdbLookup,
+	Toc,
+};
+use std::ops::Range;
 use super::STRIDE;
-use crate::chk::{UA, ctdb_cache_name};
-use cdtoc::{CtdbLookup, Toc};
-use std::{io::Read, ops::Range};
 
-/// Maximum size of a lookup response, including fuzzy entries.
-const LOOKUP_LIMIT: usize = 2 * 1024 * 1024;
 /// Number of interleaved 16-bit words per stride.
 const LANES: usize = STRIDE * 2;
 
@@ -28,30 +34,16 @@ pub(super) struct Entry {
 
 /// Reuse the normal verifier's cached lookup. A read-only caller can use this
 /// path even when the rip cache has never been created.
-pub(super) fn lookup(toc: &Toc, lengths: &[usize], fresh: bool) -> Result<Vec<Entry>, String> {
-	let cached = read_lookup_cache(toc).ok().and_then(|bytes| parse(&bytes, toc, lengths).ok());
-	match cached {
-		Some(entries) if !fresh && entries.iter().any(|e| e.parity_url.is_some()) => Ok(entries),
-		cached => request(&toc.ctdb_lookup_url(), LOOKUP_LIMIT, None)
-			.and_then(|bytes| parse(&bytes, toc, lengths).map_err(str::to_owned))
-			.or_else(|err| cached.ok_or(err)),
-	}
-}
-
-/// Read a bounded copy of the existing checksum lookup.
-fn read_lookup_cache(toc: &Toc) -> std::io::Result<Vec<u8>> {
-	let path = std::env::current_dir()?.join(crate::CACHE_BASE).join(ctdb_cache_name(toc));
-	let file = std::fs::File::open(path)?;
-	let mut bytes = Vec::new();
-	file.take(LOOKUP_LIMIT as u64 + 1).read_to_end(&mut bytes)?;
-	Ok(bytes)
+pub(super) fn lookup(toc: &Toc, lengths: &[usize]) -> Option<Vec<Entry>> {
+	let dst = ctdb_lookup_path(toc).ok()?;
+	let raw = fetch(&dst, Some(toc.ctdb_lookup_url()))?;
+	parse(&raw, toc, lengths)
 }
 
 /// Adapt cdtoc's compatible lookup records to the repair decoder's geometry.
-fn parse(bytes: &[u8], toc: &Toc, lengths: &[usize]) -> Result<Vec<Entry>, &'static str> {
-	if bytes.len() > LOOKUP_LIMIT { return Err("CTDB lookup exceeded the size limit"); }
-	let xml = std::str::from_utf8(bytes).map_err(|_| "CTDB lookup was not UTF-8")?;
-	let lookup = CtdbLookup::from_xml(xml, toc).map_err(|_| "no compatible CTDB records")?;
+fn parse(bytes: &[u8], toc: &Toc, lengths: &[usize]) -> Option<Vec<Entry>> {
+	let xml = std::str::from_utf8(bytes).ok()?;
+	let lookup = CtdbLookup::from_xml(xml, toc).ok()?;
 
 	let mut entries = Vec::new();
 	for record in lookup.entries() {
@@ -67,12 +59,9 @@ fn parse(bytes: &[u8], toc: &Toc, lengths: &[usize]) -> Result<Vec<Entry>, &'sta
 			start = end;
 		}
 
-		let id = record.id();
-		// CTDB's parity host is HTTP-only. Its S3 bucket also serves HTTPS.
-		let parity_url = record.parity_data_url()
-			.map(|_| format!("https://s3.amazonaws.com/p.cuetools.net/{id}"));
+		let parity_url = record.parity_data_url();
 		entries.push(Entry {
-			id,
+			id: record.id(),
 			confidence: record.confidence().get(),
 			disc_crc: record.album_checksum(),
 			checks,
@@ -81,16 +70,23 @@ fn parse(bytes: &[u8], toc: &Toc, lengths: &[usize]) -> Result<Vec<Entry>, &'sta
 		});
 	}
 
-	if entries.is_empty() { return Err("no compatible CTDB records"); }
+	if entries.is_empty() { return None; }
 	entries.sort_by_key(|entry| std::cmp::Reverse(entry.confidence));
-	Ok(entries)
+	Some(entries)
 }
 
 /// Download the complete record, with rows of little-endian words per root.
 pub(super) fn parity(entry: &Entry) -> Result<Vec<u16>, String> {
 	let url = entry.parity_url.as_deref().ok_or("no supported parity URL")?;
+	let bytes = cache_path(format!("{CACHE_SCRATCH}/ctdb-parity-{}.bin", entry.id))
+		.ok()
+		.and_then(|dst| fetch(&dst, Some(url)))
+		.ok_or("unable to fetech parity.")?;
+
 	let size = entry.reference.len() * LANES * 2;
-	let bytes = request(url, size, Some(size))?;
+	if bytes.len() != size {
+		return Err("CTDB parity data size is incorrect.".into());
+	}
 	let stride_bytes = LANES * 2;
 	if bytes.is_empty() || !bytes.len().is_multiple_of(stride_bytes) {
 		return Err("CTDB parity does not contain complete syndrome rows".into());
@@ -105,46 +101,6 @@ pub(super) fn parity(entry: &Entry) -> Result<Vec<u16>, String> {
 /// Parse unsigned PCM field elements without depending on host byte order.
 fn words(bytes: &[u8]) -> Vec<u16> {
 	bytes.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).collect()
-}
-
-/// Fetch a bounded response from the selected lookup or parity endpoint.
-fn request(url: &str, limit: usize, range: Option<usize>) -> Result<Vec<u8>, String> {
-	let mut get = minreq::get(url)
-		.with_header("user-agent", UA)
-		.with_timeout(15)
-		.with_max_headers_size(Some(32_768_usize))
-		.with_max_redirects(0);
-	if let Some(size) = range { get = get.with_header("range", format!("bytes=0-{}", size - 1)); }
-	let response = get.send_lazy().map_err(|err| format!("CTDB request failed ({err})"))?;
-	let size = match response.status_code {
-		200 => None,
-		206 if range.is_some() => {
-			let size = response.headers.iter()
-				.find(|(name, _)| name.eq_ignore_ascii_case("content-range"))
-				.and_then(|(_, value)| complete_range(value, limit))
-				.ok_or("unexpected CTDB parity byte range")?;
-			Some(size)
-		},
-		404 if range.is_none() => return Err("disc is absent from CTDB".into()),
-		status => return Err(format!("CTDB returned HTTP {status}")),
-	};
-	let mut bytes = Vec::new();
-	response.take(limit as u64 + 1).read_to_end(&mut bytes)
-		.map_err(|err| format!("could not read the CTDB response ({err})"))?;
-	if bytes.len() > limit { return Err("CTDB response exceeded the size limit".into()); }
-	if size.is_some_and(|length| length != bytes.len()) {
-		return Err("CTDB parity response was truncated".into());
-	}
-	Ok(bytes)
-}
-
-/// Ensure a ranged response includes the entire object, even if it has fewer
-/// rows than advertised. Partial or missing rows can't be used as parity.
-fn complete_range(header: &str, expected_limit: usize) -> Option<usize> {
-	let (last, total) = header.strip_prefix("bytes 0-")?.split_once('/')?;
-	let last = last.parse::<usize>().ok()?;
-	let total = total.parse::<usize>().ok()?;
-	(last.checked_add(1) == Some(total) && total <= expected_limit).then_some(total)
 }
 
 #[cfg(test)]
@@ -168,14 +124,21 @@ mod tests {
 		let toc = Toc::from_parts(vec![250, 11_663, 25_274, 45_963], Some(66_870), 70_000).unwrap();
 		let lengths: Vec<_> = toc.audio_tracks().map(|track| track.duration().samples() as usize).collect();
 		let entries = parse(xml, &toc, &lengths).unwrap();
-		assert_eq!(entries.len(), 2, "unsupported stride is skipped and checksum-only entries are retained");
+		assert_eq!(
+			entries.len(),
+			2,
+			"unsupported stride is skipped and checksum-only entries are retained",
+		);
 		let entry = &entries[0];
 		assert_eq!(entry.id, 94_933, "confidence order");
 		assert_eq!(entry.disc_crc, 0xe0a0_3be5, "disc CRC");
 		assert_eq!(entry.reference[0], 0x9553, "little-endian syndrome");
 		assert_eq!(entry.checks[0], (0..11_413 * 588, 0xc685_8467), "track CRC range");
-		assert_eq!(entry.parity_url.as_deref(), Some("https://s3.amazonaws.com/p.cuetools.net/94933"),
-			"verified S3 HTTPS host");
+		assert_eq!(
+			entry.parity_url.as_deref(),
+			Some("http://p.cuetools.net/94933"),
+			"verified S3 HTTPS host",
+		);
 		assert!(entries[1].parity_url.is_none(), "checksum-only entry");
 	}
 }

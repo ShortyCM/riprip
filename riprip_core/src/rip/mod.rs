@@ -825,7 +825,7 @@ impl RipEntry {
 		if self.track.is_htoa() { return false; }
 
 		// Check AccurateRip and CTDB in separate threads.
-		(self.ar, self.ctdb) = verify_track(self.track, state, false);
+		(self.ar, self.ctdb) = verify_track(self.track, state);
 
 		// If we're confirmed and the state isn't, update the state and our
 		// quality snapshot.
@@ -854,7 +854,7 @@ impl RipEntry {
 	-> Result<bool, RipRipError> {
 		if ! state.is_new() {
 			log!(@debug "Checking rip state for track {}.", self.track.number());
-			(self.ar, self.ctdb) = verify_track(self.track, state, false);
+			(self.ar, self.ctdb) = verify_track(self.track, state);
 			if opts.confidence() <= max_confidence(self.ar, self.ctdb) {
 				let tmp = TrackQuality::new_confirmed(self.quality.1.total());
 				self.quality = (tmp, tmp);
@@ -1050,20 +1050,18 @@ const fn track_idx_to_bits(idx: u8) -> u128 {
 ///
 /// Check the track rip against both the AccurateRip and CUETools databases.
 /// To improve performance, this performs each check in a separate thread.
-fn verify_track(track: Track, state: &RipState, cache_only: bool)
+fn verify_track(track: Track, state: &RipState)
 -> (Option<(u8, u8)>, Option<u16>) {
 	std::thread::scope(|s| {
 		let ar = s.spawn(|| chk_accuraterip(
 			state.toc(),
 			track,
 			state.track_slice(),
-			cache_only,
 		));
 		let ctdb = s.spawn(|| chk_ctdb(
 			state.toc(),
 			track,
 			state.rip_slice(),
-			cache_only,
 		));
 		(
 			ar.join().ok().flatten().map(|(v1, v2)| (v1.min(99), v2.min(99))),

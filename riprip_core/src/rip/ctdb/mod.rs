@@ -7,11 +7,36 @@ mod rs;
 #[cfg(test)]
 mod tests;
 
+use crate::{
+	KillSwitch,
+	RipOptions,
+	RipSample,
+	RipState,
+	SAMPLES_PER_SECTOR,
+	SavedRips,
+	state_path,
+};
+use cdtoc::{
+	Toc,
+	Track,
+};
+use repair::{
+	checksum,
+	Geometry,
+	matches_tracks,
+	Quality,
+	Rejection,
+	Repair,
+	Snapshot,
+	unchanged_crcs,
+};
+use std::{
+	collections::BTreeMap,
+	ops::Range,
+};
 use super::verify_track;
-use crate::{KillSwitch, RipOptions, RipSample, RipState, SAMPLES_PER_SECTOR, SavedRips};
-use cdtoc::{Toc, Track};
-use repair::{Geometry, Quality, Rejection, Repair, Snapshot, checksum, matches_tracks, unchanged_crcs};
-use std::{collections::BTreeMap, ops::Range};
+
+
 
 /// The standard CTDB stride in stereo frames.
 const STRIDE: usize = 10 * SAMPLES_PER_SECTOR as usize;
@@ -154,7 +179,7 @@ impl Audio {
 			};
 			let samples = state.track_slice();
 			if samples.len() != len { return Err("saved track length differs from the disc".into()); }
-			let (ar, ctdb) = verify_track(track, &state, true);
+			let (ar, ctdb) = verify_track(track, &state);
 			let trusted_ar = ar.is_some_and(|(a, b)| a.max(b) >= min_conf);
 			let trusted_ctdb = ctdb.is_some_and(|confidence| confidence >= u16::from(min_conf));
 			for (at, sample) in samples.iter().enumerate() {
@@ -209,8 +234,13 @@ impl Audio {
 }
 
 /// Install a unique verified repair at the normal rip paths.
-fn run_inner(session: &mut Session, toc: &Toc, opts: &RipOptions, killed: KillSwitch, mode: Mode<'_>)
--> Result<Outcome, String> {
+fn run_inner(
+	session: &mut Session,
+	toc: &Toc,
+	opts: &RipOptions,
+	killed: KillSwitch,
+	mode: Mode<'_>,
+) -> Result<Outcome, String> {
 	let assess = matches!(mode, Mode::Assess);
 	let lengths: Vec<_> = toc.audio_tracks().map(|track| {
 		usize::try_from(track.duration().samples()).map_err(|_| "unsupported track length")
@@ -221,7 +251,8 @@ fn run_inner(session: &mut Session, toc: &Toc, opts: &RipOptions, killed: KillSw
 	let minimum = u16::from(opts.confidence());
 	if session.entries.is_none() {
 		session.entries = Some(Vec::new());
-		let mut entries = lookup::lookup(toc, &lengths, assess)?;
+		let mut entries = lookup::lookup(toc, &lengths)
+			.ok_or("no lookup data")?;
 		let available = entries.iter().filter(|entry| entry.parity_url.is_some()).count();
 		let low = entries.iter().filter(|e| e.confidence < minimum && e.parity_url.is_some()).count();
 		eprintln!("CTDB repair — {available} compatible records advertise parity, {low} below confidence {minimum}");
@@ -236,7 +267,7 @@ fn run_inner(session: &mut Session, toc: &Toc, opts: &RipOptions, killed: KillSw
 	}
 	if !toc.audio_tracks().any(|track| {
 		mode.allows(track, opts) &&
-			crate::cache::state_read_path(toc, track).is_ok_and(|path| path.is_file())
+			state_path(toc, track).is_ok_and(|path| path.is_file())
 	}) {
 		let max = entries.iter().filter(|entry| entry.parity_url.is_some())
 			.map(|entry| entry.reference.len()).max().unwrap_or(0);

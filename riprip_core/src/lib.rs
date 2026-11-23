@@ -99,6 +99,8 @@ use cache::{
 	cache_path,
 	cache_prefix,
 	CacheWriter,
+	ctdb_lookup_path,
+	fetch,
 	state_path,
 	track_path,
 };

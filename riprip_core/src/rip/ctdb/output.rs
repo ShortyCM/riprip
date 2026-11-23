@@ -1,10 +1,40 @@
 //! Install verified PCM at the normal WAV paths and recognize it on resume.
 
-use super::{Audio, pcm_frame, repair::Repair};
-use crate::{CACHE_SCRATCH, KillSwitch, SavedRips, cache::{cache_path, cache_prefix, track_path}};
 use cdtoc::{Toc, Track};
-use std::{fs, io::{self, Read, Seek, SeekFrom}, ops::Range, path::{Path, PathBuf}};
+use crate::{
+	CACHE_SCRATCH,
+	KillSwitch,
+	SavedRips,
+	cache::{
+		cache_path,
+		cache_prefix,
+		track_path,
+	},
+};
+use std::{
+	fs,
+	io::{
+		self,
+		Read,
+		Seek,
+		SeekFrom,
+	},
+	ops::Range,
+	path::{
+		Path,
+		PathBuf,
+	},
+};
+use super::{
+	Audio,
+	pcm_frame,
+	repair::Repair,
+};
 
+
+
+/// # File Marker.
+///
 /// Bind a verified export to its bytes and the original disc and track.
 const MARKER_MAGIC: [u8; 8] = *b"RRCTDB01";
 
@@ -161,6 +191,8 @@ fn track_id(toc: &Toc, track: Track) -> u32 {
 	crc.update(&[track.number()]);
 	crc.finalize()
 }
+
+
 
 #[cfg(test)]
 mod tests {

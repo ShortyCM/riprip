@@ -7,7 +7,8 @@ use crate::{
 	cache_path,
 	cache_prefix,
 	CACHE_SCRATCH,
-	CacheWriter,
+	ctdb_lookup_path,
+	fetch,
 	macros::log,
 	RipSample,
 	SAMPLE_OVERREAD,
@@ -25,7 +26,6 @@ use std::{
 		NonZeroU8,
 		Wrapping,
 	},
-	path::Path,
 	sync::{
 		Arc,
 		atomic::{
@@ -41,14 +41,6 @@ const CTDB_WIGGLE: usize = CTDB_WIGGLE_SAMPLES * BYTES_PER_SAMPLE as usize;
 
 /// # Maximum CTDB Offset Shift (in samples).
 const CTDB_WIGGLE_SAMPLES: usize = SAMPLE_OVERREAD as usize;
-
-/// # User Agent.
-pub(crate) const UA: &str = concat!(
-	"Mozilla/5.0 (X11; Linux x86_64; rv:",
-	env!("CARGO_PKG_VERSION"),
-	") RipRip/",
-	env!("CARGO_PKG_VERSION"),
-);
 
 
 
@@ -73,15 +65,15 @@ pub(crate) const UA: &str = concat!(
 /// AccurateRip is pressing-specific and their database only accepts
 /// submissions from two Windows-only programs, so the match pool is limited
 /// compared to CUETools.
-pub(crate) fn chk_accuraterip(toc: &Toc, track: Track, data: &[RipSample], cache_only: bool)
+pub(crate) fn chk_accuraterip(toc: &Toc, track: Track, data: &[RipSample])
 -> Option<(u8, u8)> {
 	// Short-circuit: does not apply to HTOA.
 	if track.is_htoa() { return None; }
 
 	// Fetch/cache the checksums.
 	let ar = toc.accuraterip_id();
-	let name = format!("{CACHE_SCRATCH}/{}__chk-ar.bin", cache_prefix(toc));
-	let chk = lookup_data(&name, || ar.checksum_url(), cache_only)
+	let dst = cache_path(format!("{CACHE_SCRATCH}/{}__chk-ar.bin", cache_prefix(toc))).ok()?;
+	let chk = fetch(&dst, Some(ar.checksum_url()))
 		.and_then(|chk|
 			if let Ok(v) = ar.parse_checksums(&chk) { Some(v) }
 			else {
@@ -199,13 +191,14 @@ pub(crate) fn chk_accuraterip(toc: &Toc, track: Track, data: &[RipSample], cache
 /// Also of note: CUETools submissions are published more or less immediately
 /// and require no second opinion, so this method will return `0` for any value
 /// less than `2` to avoid confusion.
-pub(crate) fn chk_ctdb(toc: &Toc, track: Track, data: &[RipSample], cache_only: bool)
+pub(crate) fn chk_ctdb(toc: &Toc, track: Track, data: &[RipSample])
 -> Option<u16> {
 	// Short-circuit: does not apply to HTOA.
 	if track.is_htoa() { return None; }
 
 	// Fetch/cache the checksums.
-	let mut chk = lookup_data(&ctdb_cache_name(toc), || toc.ctdb_checksum_url(), cache_only)
+	let dst = ctdb_lookup_path(toc).ok()?;
+	let mut chk =fetch(&dst, Some(toc.ctdb_checksum_url()))
 		.and_then(|chk| {
 			if
 				let Ok(chk2) = std::str::from_utf8(&chk) &&
@@ -332,23 +325,6 @@ pub(crate) fn chk_ctdb(toc: &Toc, track: Track, data: &[RipSample], cache_only: 
 	Some(if confidence < 2 { 0 } else { confidence })
 }
 
-/// Relative path of the CTDB lookup shared by verification and repair.
-pub(crate) fn ctdb_cache_name(toc: &Toc) -> String {
-	format!("{CACHE_SCRATCH}/{}__chk-ctdb.xml", cache_prefix(toc))
-}
-
-/// Read a verification lookup, optionally allowing a download and a cache write.
-fn lookup_data(name: &str, url: impl FnOnce() -> String, cache_only: bool) -> Option<Vec<u8>> {
-	if cache_only {
-		let path = std::env::current_dir().ok()?.join(crate::CACHE_BASE).join(name);
-		std::fs::read(path).ok()
-	}
-	else {
-		let path = cache_path(name).ok()?;
-		std::fs::read(&path).ok().or_else(|| download(&url(), &path))
-	}
-}
-
 
 /// # CTDB Offset Checksumming (Negative).
 ///
@@ -435,48 +411,4 @@ fn chk_ctdb_pos(
 			}
 		}
 	}
-}
-
-/// # Download Checksums.
-///
-/// Download and return the data!
-fn download(url: &str, dst: &Path) -> Option<Vec<u8>> {
-	use std::io::Write;
-
-	log!(@debug "Downloading {url}.");
-
-	// Download the data into a vector.
-	let res = match minreq::get(url)
-		.with_header("user-agent", UA)
-		.with_timeout(15)
-		.with_max_headers_size(Some(32_768_usize))
-		.send()
-	{
-		Ok(v) => v,
-		Err(e) => {
-			log!(@trace [url] "Download failed.\n  {e}");
-			return None;
-		},
-	};
-
-	// Only accept happy response codes with sized bodies.
-	if (200..=399).contains(&res.status_code) {
-		let out = res.into_bytes();
-		if out.is_empty() {
-			log!(@trace [url] "Received empty response.");
-		}
-		else {
-			// Cache the contents for next time.
-			let _res = CacheWriter::new(dst).ok()
-				.and_then(|mut writer| {
-					writer.writer().write_all(&out).ok()?;
-					writer.finish().ok()
-				});
-			return Some(out);
-		}
-	}
-	else { log!(@trace [url] "Download failed with status {}.", res.status_code); }
-
-	// However we got here, there's nothing for it.
-	None
 }

@@ -34,6 +34,14 @@ static CACHE_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 /// The formatted CDDB ID for the current disc.
 static CACHE_PREFIX: OnceLock<String> = OnceLock::new();
 
+/// # User Agent.
+const UA: &str = concat!(
+	"Mozilla/5.0 (X11; Linux x86_64; rv:",
+	env!("CARGO_PKG_VERSION"),
+	") RipRip/",
+	env!("CARGO_PKG_VERSION"),
+);
+
 
 
 /// # Cache Writer.
@@ -158,6 +166,75 @@ pub(super) fn cache_prefix(toc: &Toc) -> &'static str {
 	CACHE_PREFIX.get_or_init(|| toc.cddb_id().to_string())
 }
 
+/// # CTDB Lookup Path.
+///
+/// The full path to a CTDB lookup entry.
+pub(crate) fn ctdb_lookup_path(toc: &Toc) -> Result<PathBuf, RipRipError> {
+	cache_path(ctdb_lookup_name(toc))
+}
+
+/// # CTDB Lookup Name.
+///
+/// The relative path for a CTDB lookup entry.
+fn ctdb_lookup_name(toc: &Toc) -> String {
+	format!("{CACHE_SCRATCH}/{}__chk-ctdb.xml", cache_prefix(toc))
+}
+
+#[must_use]
+/// # Download File.
+///
+/// Try to download the file, caching it to `dst`, returning the result if
+/// successful.
+pub(super) fn download(url: &str, dst: &Path) -> Option<Vec<u8>> {
+	use std::io::Write;
+
+	log!(@debug "Downloading {url}.");
+
+	// Download the data into a vector.
+	let res = match minreq::get(url)
+		.with_header("user-agent", UA)
+		.with_timeout(15)
+		.with_max_headers_size(Some(32_768_usize))
+		.send()
+	{
+		Ok(v) => v,
+		Err(e) => {
+			log!(@trace [url] "Download failed.\n  {e}");
+			return None;
+		},
+	};
+
+	// Only accept happy response codes with sized bodies.
+	if (200..=399).contains(&res.status_code) {
+		let out = res.into_bytes();
+		if out.is_empty() {
+			log!(@trace [url] "Received empty response.");
+		}
+		else {
+			// Cache the contents for next time.
+			let _res = CacheWriter::new(dst).ok()
+				.and_then(|mut writer| {
+					writer.writer().write_all(&out).ok()?;
+					writer.finish().ok()
+				});
+			return Some(out);
+		}
+	}
+	else { log!(@trace [url] "Download failed with status {}.", res.status_code); }
+
+	// However we got here, there's nothing for it.
+	None
+}
+
+#[must_use]
+/// # Fetch or Download.
+///
+/// Read a file from cache, if it exists, or download it fresh, if a URL is
+/// supplied.
+pub(super) fn fetch<S: AsRef<str>>(dst: &Path, url: Option<S>) -> Option<Vec<u8>> {
+	std::fs::read(dst).ok().or_else(|| url.and_then(|url| download(url.as_ref(), dst)))
+}
+
 /// # State Path.
 ///
 /// Return the file path to save the state data to.
@@ -174,12 +251,9 @@ pub(crate) fn state_path(toc: &Toc, track: Track) -> Result<PathBuf, RipRipError
 	cache_path(state_name(toc, track))
 }
 
-/// Locate a saved state without creating any cache directories.
-pub(crate) fn state_read_path(toc: &Toc, track: Track) -> std::io::Result<PathBuf> {
-	Ok(std::env::current_dir()?.join(CACHE_BASE).join(state_name(toc, track)))
-}
-
-/// Relative path shared by state readers and writers.
+/// # State Name.
+///
+/// The relative path of the state data for a single track.
 fn state_name(toc: &Toc, track: Track) -> String {
 	format!(
 		"{CACHE_SCRATCH}/{}__{:02}.state",

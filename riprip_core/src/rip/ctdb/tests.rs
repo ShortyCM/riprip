@@ -427,7 +427,7 @@ fn physical_cd_updates_normal_wav() {
 	let expected = fs::read(fixture.join("_riprip").join(wav.file_name().unwrap())).unwrap();
 	assert!(fs::read(&wav).unwrap() != expected, "test starts with a damaged WAV at its normal path");
 	let lengths: Vec<_> = toc.audio_tracks().map(|track| track.duration().samples() as usize).collect();
-	let entry = lookup::lookup(&toc, &lengths, false).unwrap().into_iter()
+	let entry = lookup::lookup(&toc, &lengths).unwrap().into_iter()
 		.find(|entry| entry.id == 90_691).expect("record 90691 in the saved CTDB lookup");
 	let parity = fs::read(fixture.join("90691.syndrome")).unwrap();
 	let parity: Vec<_> = parity.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).collect();
