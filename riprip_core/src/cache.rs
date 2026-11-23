@@ -14,11 +14,15 @@ use crate::{
 };
 use fyi_msg::Msg;
 use std::{
+	collections::BTreeSet,
 	path::{
 		Path,
 		PathBuf,
 	},
-	sync::OnceLock,
+	sync::{
+		Mutex,
+		OnceLock,
+	},
 };
 use tempfile::NamedTempFile;
 
@@ -33,6 +37,13 @@ static CACHE_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 ///
 /// The formatted CDDB ID for the current disc.
 static CACHE_PREFIX: OnceLock<String> = OnceLock::new();
+
+/// # Already Downloaded List.
+///
+/// Keep track of URLs we've tried to download to avoid e.g. repeatedly hitting
+/// up a checksum database for an entry that doesn't exist. (Their servers go
+/// down from time to time too…).
+static DOWNLOADED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// # User Agent.
 const UA: &str = concat!(
@@ -187,6 +198,11 @@ fn ctdb_lookup_name(toc: &Toc) -> String {
 /// successful.
 pub(super) fn download(url: &str, dst: &Path) -> Option<Vec<u8>> {
 	use std::io::Write;
+
+	// Do not try to download the same thing twice in a single session.
+	if DOWNLOADED.lock().ok().is_none_or(|mut v| ! v.insert(url.to_owned())) {
+		return None;
+	}
 
 	log!(@debug "Downloading {url}.");
 
