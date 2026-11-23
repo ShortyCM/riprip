@@ -247,7 +247,7 @@ fn run_inner(
 	}).collect::<Result<_, _>>()?;
 	let frames = lengths.iter().try_fold(0_usize, |sum, &len| sum.checked_add(len))
 		.ok_or("unsupported audio length")?;
-	let geometry = Geometry::new(frames, STRIDE).ok_or("unsupported audio length")?;
+	let geometry = Geometry::new(frames).ok_or("unsupported audio length")?;
 	let minimum = u16::from(opts.confidence());
 	if session.entries.is_none() {
 		session.entries = Some(Vec::new());
@@ -272,7 +272,7 @@ fn run_inner(
 		let max = entries.iter().filter(|entry| entry.parity_url.is_some())
 			.map(|entry| entry.reference.len()).max().unwrap_or(0);
 		return Err(format!("no saved audio to assess. At most {max} parity rows are advertised, with {} unread frames per lane",
-			geometry.rows));
+			geometry.rows()));
 	}
 
 	let audio = Audio::load(toc, opts, &lengths, mode, killed)?;

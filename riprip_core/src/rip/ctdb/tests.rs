@@ -42,16 +42,20 @@ fn field_product(a: u16, b: u16) -> u16 {
 /// # Reference Syndrome.
 ///
 /// Build wire-order syndromes by summing columns of the parity check matrix.
-fn reference(pcm: &[u16], geometry: Geometry, offset: isize, roots: usize) -> Vec<u16> {
-	let lanes = geometry.lanes();
+fn reference<const S: usize>(
+	pcm: &[u16],
+	geometry: Geometry<S>,
+	offset: isize,
+	roots: usize,
+) -> Vec<u16> {
 	let first = 2 * geometry.window(offset).start;
-	let mut out = vec![0; lanes * roots];
+	let mut out = vec![0; Geometry::<S>::LANES * roots];
 	let mut root = 1;
-	for row in out.chunks_exact_mut(lanes) {
+	for row in out.chunks_exact_mut(Geometry::<S>::LANES) {
 		let mut weight = 1;
-		for at in (0..geometry.rows).rev() {
-			let start = first + at * lanes;
-			for (s, &word) in row.iter_mut().zip(&pcm[start..start + lanes]) {
+		for at in (0..geometry.rows()).rev() {
+			let start = first + at * Geometry::<S>::LANES;
+			for (s, &word) in row.iter_mut().zip(&pcm[start..start + Geometry::<S>::LANES]) {
 				*s ^= field_product(word, weight);
 			}
 			root_assert(weight);
@@ -87,7 +91,12 @@ fn fixture(frames: usize) -> Vec<u16> {
 }
 
 /// # Make Entry.
-fn record(pcm: &[u16], geometry: Geometry, offset: isize, split: usize) -> Entry {
+fn record<const S: usize>(
+	pcm: &[u16],
+	geometry: Geometry<S>,
+	offset: isize,
+	split: usize,
+) -> Entry {
 	let window = geometry.window(offset);
 	let pivot = split.checked_add_signed(offset).expect("test boundary in range");
 	Entry {
@@ -106,8 +115,10 @@ fn record(pcm: &[u16], geometry: Geometry, offset: isize, split: usize) -> Entry
 #[test]
 /// A whole-sector burst straddles a track boundary and one interleave wrap.
 fn interleaved_sectors_and_pressing_offsets() {
+	const STRIDE: usize = 3 * SECTOR;
+
 	let frames = 43 * SECTOR;
-	let geometry = Geometry::new(frames, 3 * SECTOR).expect("test geometry");
+	let geometry = Geometry::<{STRIDE}>::new(frames).expect("test geometry");
 	let original = fixture(frames);
 	for offset in [0, -173, 191] {
 		let split = frames / 2;
@@ -115,7 +126,7 @@ fn interleaved_sectors_and_pressing_offsets() {
 		let parity = reference(&original, geometry, offset, 8);
 		let mut damaged = original.clone();
 		let mut flags = vec![Quality::Likely; frames];
-		let wrap = geometry.window(offset).start + 6 * geometry.stride;
+		let wrap = geometry.window(offset).start + 6 * STRIDE;
 		for frame in wrap - SECTOR / 2..wrap + SECTOR / 2 {
 			damaged[2 * frame] ^= 0x430b;
 			damaged[2 * frame + 1] ^= 0x9593;
@@ -141,7 +152,9 @@ fn interleaved_sectors_and_pressing_offsets() {
 
 #[test]
 fn errors_erasures_and_mixed_capacity_boundaries() {
-	let geometry = Geometry::new(83 * 9 + 4, 9).expect("test geometry");
+	const STRIDE: usize = 9;
+
+	let geometry = Geometry::<{STRIDE}>::new(83 * 9 + 4).expect("test geometry");
 	let frames = 83 * 9 + 4;
 	let original = fixture(frames);
 	let entry = record(&original, geometry, 0, 344);
@@ -155,7 +168,7 @@ fn errors_erasures_and_mixed_capacity_boundaries() {
 		let mut damaged = original.clone();
 		let mut flags = vec![Quality::Likely; frames];
 		for i in 0..(errors + erasures) {
-			let frame = start + (i * 3 + 1) * geometry.stride + 2;
+			let frame = start + (i * 3 + 1) * STRIDE + 2;
 			damaged[frame * 2] ^= 0xb351;
 			if i < erasures { flags[frame] = Quality::Erasure; }
 		}
@@ -187,7 +200,7 @@ fn errors_erasures_and_mixed_capacity_boundaries() {
 #[test]
 fn checksum_and_protected_samples_gate_acceptance() {
 	let frames = 503;
-	let geometry = Geometry::new(frames, 26).expect("test geometry");
+	let geometry = Geometry::<26>::new(frames).expect("test geometry");
 	let original = fixture(frames);
 	let parity = reference(&original, geometry, 0, 8);
 	let mut damaged = original.clone();
@@ -227,8 +240,10 @@ fn checksum_and_protected_samples_gate_acceptance() {
 
 #[test]
 fn false_erasure_hints_do_not_block_a_verified_error_only_repair() {
+	const STRIDE: usize = 31;
+
 	let frames = 609;
-	let geometry = Geometry::new(frames, 31).unwrap();
+	let geometry = Geometry::<{STRIDE}>::new(frames).unwrap();
 	let original = fixture(frames);
 	let entry = record(&original, geometry, 0, 300);
 	let parity = reference(&original, geometry, 0, 4);
@@ -246,7 +261,7 @@ fn false_erasure_hints_do_not_block_a_verified_error_only_repair() {
 		}
 		root = field_product(root, 2);
 	}
-	let lane_frame = |row: usize| geometry.window(0).start + (3 + row) * geometry.stride + 9;
+	let lane_frame = |row: usize| geometry.window(0).start + (3 + row) * STRIDE + 9;
 	damaged[lane_frame(0) * 2] ^= generator[0];
 	damaged[lane_frame(1) * 2] ^= generator[1];
 	flags[lane_frame(2)] = Quality::Erasure;
@@ -265,7 +280,7 @@ fn false_erasure_hints_do_not_block_a_verified_error_only_repair() {
 #[test]
 fn shifted_crc_scan_matches_independent_pcm_slices() {
 	let frames = 780;
-	let geometry = Geometry::new(frames, 39).expect("test geometry");
+	let geometry = Geometry::<39>::new(frames).expect("test geometry");
 	let pcm = fixture(frames);
 	for (offset, checksum) in unchanged_crcs(&pcm, geometry, kill_switch()) {
 		assert_eq!(checksum, crc(&pcm, geometry.window(offset)), "offset {offset}");
@@ -316,7 +331,7 @@ fn verified_checkpoint_keeps_only_reachable_guards_and_htoa_pending() {
 
 #[test]
 fn rejects_crc_valid_patches_at_ambiguous_offsets() {
-	let geometry = Geometry::new(260, 10).unwrap();
+	let geometry = Geometry::<10>::new(260).unwrap();
 	let mut original = vec![0; 520];
 	original[211] = 0x7e55;
 	let damaged = vec![0; 520];

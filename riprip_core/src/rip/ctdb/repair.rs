@@ -1,6 +1,12 @@
 //! Interleaving, pressing offsets, and CRC verification for CTDB repair.
 
-use super::{lookup::Entry, rs::{Field, MAX_PARITY}};
+use super::{
+	lookup::Entry,
+	rs::{
+		Field,
+		MAX_PARITY,
+	},
+};
 use crate::KillSwitch;
 use crc32fast::Hasher;
 use std::ops::Range;
@@ -10,38 +16,48 @@ use std::ops::Range;
 pub(super) enum Quality {
 	/// Independently verified by the existing per-track verifier.
 	Trusted,
+
 	/// Repeated physical reads agreed.
 	Likely,
+
 	/// A physical candidate exists, but lacks a qualifying majority.
 	Weak,
+
 	/// The drive reported C2, or a frame could not be read.
 	Erasure,
 }
 
 /// The interval that CTDB covers and its shortened RS dimensions.
 #[derive(Clone, Copy)]
-pub(super) struct Geometry {
-	/// Stereo frames per row.
-	pub(super) stride: usize,
+pub(super) struct Geometry<const S: usize = { super::STRIDE }> {
 	/// Number of complete protected rows.
-	pub(super) rows: usize,
+	rows: usize,
 }
 
-impl Geometry {
+impl<const S: usize> Geometry<S> {
+	/// # Lanes.
+	///
+	/// There are two 16-bit lanes per stereo frame in a row.
+	pub(super) const LANES: usize = 2 * S;
+
 	/// Determine the number of full protected rows in the audio image.
-	pub(super) fn new(frames: usize, stride: usize) -> Option<Self> {
-		let rows = frames.checked_div(stride)?.checked_sub(2)?;
+	pub(super) fn new(frames: usize) -> Option<Self> {
+		const {
+			assert!(S != 0 && S <= 5880, "BUG: geometry stride must be 1..=5880.");
+		}
+
+		let rows = frames.checked_div(S)?.checked_sub(2)?;
 		if rows == 0 || rows + MAX_PARITY > 65_535 { return None; }
-		Some(Self { stride, rows })
+		Some(Self { rows })
 	}
 
-	/// Two 16-bit lanes per stereo frame in a row.
-	pub(super) const fn lanes(self) -> usize { self.stride * 2 }
+	/// # Rows.
+	pub(super) const fn rows(self) -> usize { self.rows }
 
 	/// Protected range shifted in local audio coordinates.
 	pub(super) const fn window(self, offset: isize) -> Range<usize> {
-		let start = self.stride.checked_add_signed(offset).expect("offset within one stride");
-		start..start + self.rows * self.stride
+		let start = S.saturating_add_signed(offset);
+		start..start + self.rows() * S
 	}
 }
 
@@ -50,16 +66,22 @@ impl Geometry {
 pub(super) struct Capacity {
 	/// Largest number of known locations among the lanes.
 	pub(super) max_erasures: usize,
+
 	/// Largest number of suspect locations, including the known erasures.
 	pub(super) max_suspect: usize,
+
 	/// Largest error/erasure budget assuming every suspect frame is wrong.
 	pub(super) max_mixed_cost: usize,
+
 	/// Lanes whose known erasures alone would exceed the parity budget.
 	pub(super) lanes_over_erasures: usize,
+
 	/// Lanes that would exceed the budget without erasure information.
 	pub(super) lanes_over_unknowns: usize,
+
 	/// Lanes that would exceed the budget even with the known locations.
 	pub(super) lanes_over_mixed: usize,
+
 	/// Suspect stereo frames beyond either edge of the protected window.
 	pub(super) outside: usize,
 }
@@ -139,7 +161,7 @@ impl LaneHints {
 	}
 
 	/// Replace the edge row that rolls into or out of a shifted lane.
-	fn shifted(&self, geometry: Geometry, rollover: isize, before: Quality, first: Quality,
+	fn shifted<const S: usize>(&self, geometry: Geometry<S>, rollover: isize, before: Quality, first: Quality,
 		last: Quality, after: Quality) -> Self {
 		// A sub-stride offset preserves each lane's order and can replace
 		// at most its first or last element.
@@ -147,7 +169,7 @@ impl LaneHints {
 			let mut len = if add && rollover < 0 { out[0] = 0; 1 } else { 0 };
 			for &row in &rows[..count.min(rows.len())] {
 				if let Some(row) = row.checked_add_signed(-rollover) &&
-					row < geometry.rows &&
+					row < geometry.rows() &&
 					let Some(slot) = out.get_mut(len)
 				{
 					*slot = row;
@@ -155,7 +177,7 @@ impl LaneHints {
 				}
 			}
 			if add && rollover > 0 && let Some(slot) = out.get_mut(len) {
-				*slot = geometry.rows - 1;
+				*slot = geometry.rows() - 1;
 			}
 			count - usize::from(drop) + usize::from(add)
 		};
@@ -171,39 +193,54 @@ impl LaneHints {
 }
 
 /// The reusable unshifted syndromes and quality distribution of one snapshot.
-pub(super) struct Snapshot<'a> {
+pub(super) struct Snapshot<'a, const S: usize = { super::STRIDE }> {
 	/// Image dimensions and protected window.
-	geometry: Geometry,
+	geometry: Geometry<S>,
+
 	/// The original PCM, referenced for the checksums and offset scan.
 	pcm: &'a [u16],
+
 	/// Evidence per stereo frame, including the excluded edges.
 	quality: &'a [Quality],
+
 	/// Calculated unshifted syndromes, in wire order.
 	syndromes: Vec<u16>,
+
 	/// Unshifted quality information, one entry per stereo frame in a row.
 	hints: Vec<LaneHints>,
 }
 
-impl<'a> Snapshot<'a> {
+impl<'a, const S: usize> Snapshot<'a, S> {
+	/// # Stride.
+	const STRIDE: usize = S;
+
+	/// # Lanes.
+	const LANES: usize = Geometry::<S>::LANES;
+
+	#[expect(clippy::chunks_exact_to_as_chunks, reason = "Doesn't work.")]
 	/// Evaluate each unshifted lane once, independent of the lookup entries.
-	pub(super) fn new(geometry: Geometry, pcm: &'a [u16],
-		quality: &'a [Quality], roots: usize, killed: KillSwitch) -> Option<Self> {
-		let lanes = geometry.lanes();
+	pub(super) fn new(
+		geometry: Geometry<S>,
+		pcm: &'a [u16],
+		quality: &'a [Quality],
+		roots: usize,
+		killed: KillSwitch,
+	) -> Option<Self> {
 		let range = geometry.window(0);
 		let samples = &pcm[2 * range.start..2 * range.end];
-		let mut syndromes = vec![0_u16; lanes * roots];
-		for (root, sums) in syndromes.chunks_exact_mut(lanes).enumerate() {
+		let mut syndromes = vec![0_u16; Self::LANES * roots];
+		for (root, sums) in syndromes.chunks_exact_mut(Self::LANES).enumerate() {
 			if killed.killed() { return None; }
 			let [low, high] = Field::multiplier(Field::alpha(root));
-			for row in samples.chunks_exact(lanes) {
+			for row in samples.chunks_exact(Self::LANES) {
 				for (sum, &symbol) in sums.iter_mut().zip(row) {
 					let [lo, hi] = sum.to_le_bytes();
 					*sum = low[usize::from(lo)] ^ high[usize::from(hi)] ^ symbol;
 				}
 			}
 		}
-		let mut hints: Vec<_> = (0..geometry.stride).map(|_| LaneHints::default()).collect();
-		for (row, quality) in quality[range].chunks_exact(geometry.stride).enumerate() {
+		let mut hints: Vec<_> = (0..Self::STRIDE).map(|_| LaneHints::default()).collect();
+		for (row, quality) in quality[range].chunks_exact(Self::STRIDE).enumerate() {
 			for (hint, &quality) in hints.iter_mut().zip(quality) { hint.remember(row, quality); }
 		}
 		Some(Self { geometry, pcm, quality, syndromes, hints })
@@ -212,7 +249,7 @@ impl<'a> Snapshot<'a> {
 	/// Assess the hard erasure and unknown-error bounds separately.
 	pub(super) fn capacity(&self, offset: isize, roots: usize) -> Capacity {
 		let mut out = Capacity::default();
-		for lane in 0..self.geometry.stride {
+		for lane in 0..Self::STRIDE {
 			self.with_hints(lane, offset, |hint| {
 				out.max_erasures = out.max_erasures.max(hint.erasures);
 				out.max_suspect = out.max_suspect.max(hint.suspects);
@@ -232,18 +269,17 @@ impl<'a> Snapshot<'a> {
 	/// Find an alignment whose corrections satisfy the published checksums.
 	pub(super) fn find(&self, entry: &Entry, reference: &[u16], killed: KillSwitch)
 	-> Result<Repair, Rejection> {
-		let lanes = self.geometry.lanes();
-		let limit = isize::try_from(self.geometry.stride).map_err(|_| Rejection::Alignment)? - 1;
+		let limit = isize::try_from(Self::STRIDE).map_err(|_| Rejection::Alignment)? - 1;
 		let offsets = std::iter::once(0).chain((1..=limit).flat_map(|n| [n, -n]));
 		let mut verified: Option<Repair> = None;
 		let mut reason = Rejection::Alignment;
 		for offset in offsets {
 			if killed.killed() { return Err(Rejection::Cancelled); }
-			let roots = reference.len() / lanes;
+			let roots = reference.len() / Self::LANES;
 			// Any valid alignment has decodable syndromes in these lanes.
 			// They span the stride so a shifted or silent first lane does
 			// not cause a full decode for every offset.
-			let anchors = [0, 1, lanes / 4, lanes / 2, 3 * lanes / 4, lanes - 1];
+			let anchors = [0, 1, Self::LANES / 4, Self::LANES / 2, 3 * Self::LANES / 4, Self::LANES - 1];
 			if !anchors.into_iter().all(|lane| {
 				self.with_hints(lane / 2, offset, |hint| {
 					self.decode_lane(lane, offset, reference, roots, hint, Hints::Known).is_some()
@@ -275,17 +311,16 @@ impl<'a> Snapshot<'a> {
 	/// Assemble a complete candidate at one alignment.
 	fn solve(&self, offset: isize, reference: &[u16], hints: Hints, killed: KillSwitch)
 	-> Option<Vec<(usize, u16)>> {
-		let lanes = self.geometry.lanes();
 		let start = self.geometry.window(offset).start * 2;
-		let roots = reference.len() / lanes;
+		let roots = reference.len() / Self::LANES;
 		let mut corrections = Vec::new();
-		for frame in 0..self.geometry.stride {
+		for frame in 0..Self::STRIDE {
 			if killed.killed() { return None; }
 			self.with_hints(frame, offset, |hint| {
 				for lane in [frame * 2, frame * 2 + 1] {
 					let changes = self.decode_lane(lane, offset, reference, roots, hint, hints)?;
 					corrections.extend(changes.into_iter().map(|(row, magnitude)| {
-						(start + lane + row * lanes, magnitude)
+						(start + lane + row * Self::LANES, magnitude)
 					}));
 				}
 				Some(())
@@ -297,27 +332,25 @@ impl<'a> Snapshot<'a> {
 
 	/// Re-index a lane at a pressing offset using the unshifted recovery statistics.
 	fn with_hints<T>(&self, frame: usize, offset: isize, f: impl FnOnce(&LaneHints) -> T) -> T {
-		let stride = self.geometry.stride;
-		let shifted = stride.checked_add_signed(offset).expect("offset within one stride") + frame;
-		let lane = shifted % stride;
+		let shifted = Self::STRIDE.checked_add_signed(offset).expect("offset within one stride") + frame;
+		let lane = shifted % Self::STRIDE;
 		let hint = &self.hints[lane];
-		let rollover = (shifted / stride).cast_signed() - 1;
+		let rollover = (shifted / Self::STRIDE).cast_signed() - 1;
 		if rollover == 0 { return f(hint); }
-		let end = self.geometry.rows * stride + lane;
+		let end = self.geometry.rows() * Self::STRIDE + lane;
 		f(&hint.shifted(self.geometry, rollover, self.quality[lane],
-			self.quality[stride + lane], self.quality[end], self.quality[end + stride]))
+			self.quality[Self::STRIDE + lane], self.quality[end], self.quality[end + Self::STRIDE]))
 	}
 
 	/// Recover one lane without modifying the underlying samples.
 	fn decode_lane(&self, lane: usize, offset: isize, reference: &[u16],
 		roots: usize, hint: &LaneHints, order: Hints) -> Option<Vec<(usize, u16)>> {
-		let lanes = self.geometry.lanes();
 		let window = self.geometry.window(offset);
 		let start = window.start * 2 + lane;
 		let first_frame = start / 2;
 		let mut delta = [0; MAX_PARITY];
 		for (root, diff) in delta[..roots].iter_mut().enumerate() {
-			*diff = self.shifted_syndrome(root, start) ^ reference[root * lanes + lane];
+			*diff = self.shifted_syndrome(root, start) ^ reference[root * Self::LANES + lane];
 		}
 
 		let erased = hint.erased.get(..hint.erasures);
@@ -330,27 +363,26 @@ impl<'a> Snapshot<'a> {
 			Hints::Suspect => [suspect, erased.filter(|_| hint.erasures != 0), unknown],
 		};
 		orders.into_iter().flatten().find_map(|rows| {
-			Field::decode(&delta[..roots], self.geometry.rows, rows)
+			Field::decode(&delta[..roots], self.geometry.rows(), rows)
 				.filter(|patch| patch.iter().all(|&(row, _)| {
-					self.quality[first_frame + row * self.geometry.stride] != Quality::Trusted
+					self.quality[first_frame + row * Self::STRIDE] != Quality::Trusted
 				}))
 		})
 	}
 
 	/// Evaluate the shifted lane by dropping and adding its edge terms.
 	fn shifted_syndrome(&self, root: usize, start: usize) -> u16 {
-		let lanes = self.geometry.lanes();
-		let lane = start % lanes;
-		let base = self.syndromes[root * lanes + lane];
-		let last = self.geometry.rows * lanes + lane;
-		let leading_power = root * (self.geometry.rows - 1);
-		if start < lanes {
+		let lane = start % Self::LANES;
+		let base = self.syndromes[root * Self::LANES + lane];
+		let last = self.geometry.rows() * Self::LANES + lane;
+		let leading_power = root * (self.geometry.rows() - 1);
+		if start < Self::LANES {
 			Field::mul_alpha(base ^ self.pcm[last], 65_535 - root) ^
 				Field::mul_alpha(self.pcm[lane], leading_power)
 		}
-		else if start >= 2 * lanes {
-			Field::mul_alpha(base ^ Field::mul_alpha(self.pcm[lanes + lane], leading_power), root) ^
-				self.pcm[last + lanes]
+		else if start >= 2 * Self::LANES {
+			Field::mul_alpha(base ^ Field::mul_alpha(self.pcm[Self::LANES + lane], leading_power), root) ^
+				self.pcm[last + Self::LANES]
 		}
 		else { base }
 	}
@@ -371,9 +403,12 @@ pub(super) fn matches_tracks(pcm: &[u16], entry: &Entry, window: Range<usize>, o
 }
 
 /// Calculate the clean-audio CRC for each alignment without rescanning the disc.
-pub(super) fn unchanged_crcs(pcm: &[u16], geometry: Geometry, killed: KillSwitch)
--> Vec<(isize, u32)> {
-	let limit = isize::try_from(geometry.stride).expect("CD stride fits isize") - 1;
+pub(super) fn unchanged_crcs<const S: usize>(
+	pcm: &[u16],
+	geometry: Geometry<S>,
+	killed: KillSwitch,
+) -> Vec<(isize, u32)> {
+	let limit = isize::try_from(S).expect("CD stride fits isize") - 1;
 	let early = geometry.window(-limit);
 	let late = geometry.window(limit);
 	let offsets = std::iter::once(0).chain((1..=limit).flat_map(|n| [n, -n]));
