@@ -468,18 +468,6 @@ impl RipState {
 		let rng = self.inner_index_track_rng();
 		&self.data[rng]
 	}
-
-	/// Alter one stereo frame in an isolated test copy of the saved state.
-	#[cfg(test)]
-	pub(super) fn inject_test_error(&mut self, frame: usize) {
-		let range = self.inner_index_track_rng();
-		let sample = &mut self.data[range][frame];
-		let mut bytes = sample.as_array();
-		bytes[0] ^= 0xbd;
-		bytes[1] ^= 0x41;
-		*sample = RipSample::Tbd;
-		sample.update(bytes, false, true);
-	}
 }
 
 impl RipState {
