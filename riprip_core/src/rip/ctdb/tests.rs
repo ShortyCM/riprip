@@ -42,20 +42,20 @@ fn field_product(a: u16, b: u16) -> u16 {
 /// # Reference Syndrome.
 ///
 /// Build wire-order syndromes by summing columns of the parity check matrix.
-fn reference<const S: usize>(
+fn reference<const S: u16>(
 	pcm: &[u16],
 	geometry: Geometry<S>,
 	offset: isize,
 	roots: usize,
 ) -> Vec<u16> {
 	let first = 2 * geometry.window(offset).start;
-	let mut out = vec![0; Geometry::<S>::LANES * roots];
+	let mut out = vec![0; (Geometry::<S>::LANES.get() as usize) * roots];
 	let mut root = 1;
-	for row in out.chunks_exact_mut(Geometry::<S>::LANES) {
+	for row in out.chunks_exact_mut(usize::from(Geometry::<S>::LANES.get())) {
 		let mut weight = 1;
-		for at in (0..geometry.rows()).rev() {
-			let start = first + at * Geometry::<S>::LANES;
-			for (s, &word) in row.iter_mut().zip(&pcm[start..start + Geometry::<S>::LANES]) {
+		for at in (0..usize::from(geometry.rows().get())).rev() {
+			let start = first + at * usize::from(Geometry::<S>::LANES.get());
+			for (s, &word) in row.iter_mut().zip(&pcm[start..start + usize::from(Geometry::<S>::LANES.get())]) {
 				*s ^= field_product(word, weight);
 			}
 			root_assert(weight);
@@ -91,7 +91,7 @@ fn fixture(frames: usize) -> Vec<u16> {
 }
 
 /// # Make Entry.
-fn record<const S: usize>(
+fn record<const S: u16>(
 	pcm: &[u16],
 	geometry: Geometry<S>,
 	offset: isize,
@@ -118,7 +118,7 @@ fn interleaved_sectors_and_pressing_offsets() {
 	const STRIDE: usize = 3 * SECTOR;
 
 	let frames = 43 * SECTOR;
-	let geometry = Geometry::<{STRIDE}>::new(frames).expect("test geometry");
+	let geometry = Geometry::<{STRIDE as u16}>::new(frames).expect("test geometry");
 	let original = fixture(frames);
 	for offset in [0, -173, 191] {
 		let split = frames / 2;
@@ -154,7 +154,7 @@ fn interleaved_sectors_and_pressing_offsets() {
 fn errors_erasures_and_mixed_capacity_boundaries() {
 	const STRIDE: usize = 9;
 
-	let geometry = Geometry::<{STRIDE}>::new(83 * 9 + 4).expect("test geometry");
+	let geometry = Geometry::<{STRIDE as u16}>::new(83 * 9 + 4).expect("test geometry");
 	let frames = 83 * 9 + 4;
 	let original = fixture(frames);
 	let entry = record(&original, geometry, 0, 344);
@@ -243,7 +243,7 @@ fn false_erasure_hints_do_not_block_a_verified_error_only_repair() {
 	const STRIDE: usize = 31;
 
 	let frames = 609;
-	let geometry = Geometry::<{STRIDE}>::new(frames).unwrap();
+	let geometry = Geometry::<{STRIDE as u16}>::new(frames).unwrap();
 	let original = fixture(frames);
 	let entry = record(&original, geometry, 0, 300);
 	let parity = reference(&original, geometry, 0, 4);

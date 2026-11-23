@@ -2,6 +2,8 @@
 # Rip Rip Hooray: Reed–Solomon decoding over CTDB's GF(2^16).
 */
 
+use std::num::NonZeroU16;
+
 /// # Number of Nonzero Field Elements.
 const ORDER: usize = u16::MAX as usize;
 
@@ -100,12 +102,9 @@ impl Field {
 	/// failure.
 	pub(super) fn decode(
 		syndromes: &[u16],
-		words: usize,
+		words: NonZeroU16,
 		erasures: &[usize],
 	) -> Option<Vec<(usize, u16)>> {
-		// Short circuit: remind compiler that words fits u16.
-		if ORDER < words { return None; }
-
 		// Short circuit: bail if the the syndrome is empty or all zero.
 		if syndromes.is_empty() || syndromes.iter().all(|&s| s == 0) {
 			return Some(Vec::new());
@@ -118,6 +117,7 @@ impl Field {
 
 		// For each known location X, taking S[j+1] + X*S[j] cancels
 		// its contribution and leaves a shorter sequence for the unknowns.
+		let words = usize::from(words.get());
 		let mut reduced = [0; MAX_PARITY];
 		let mut remaining = syndromes.len();
 		reduced[..remaining].copy_from_slice(syndromes);
