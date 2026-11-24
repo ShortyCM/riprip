@@ -65,6 +65,17 @@ impl RipSample {
 		}
 	}
 
+	/// # As Stereo Pair.
+	///
+	/// Return the left and right sample pair as little endian `u16`.
+	pub(crate) const fn as_pair(&self) -> [u16; 2] {
+		let [a1, a2, b1, b2] = self.as_array();
+		[
+			u16::from_le_bytes([a1, a2]),
+			u16::from_le_bytes([b1, b2]),
+		]
+	}
+
 	/// # Data Kind.
 	///
 	/// Return the variant ID used for de/serialization.

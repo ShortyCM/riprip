@@ -15,8 +15,8 @@ use crate::{
 	RipOptions,
 	RipRipError,
 	RipSample,
-	SAMPLE_OVERREAD,
 	Sample,
+	SAMPLE_OVERREAD,
 	SAMPLES_PER_SECTOR,
 	state_path,
 	track_path,
@@ -27,7 +27,10 @@ use std::{
 		BufReader,
 		BufWriter,
 	},
-	path::{Path, PathBuf},
+	path::{
+		Path,
+		PathBuf,
+	},
 	range::legacy::Range,
 };
 use super::{
@@ -128,27 +131,6 @@ impl RipState {
 	/// user opts not to start over.
 	pub(crate) fn new(toc: &Toc, track: Track, opts: &RipOptions)
 	-> Result<Self, RipRipError> {
-		Self::new_inner(toc, track, opts, None)
-	}
-
-	/// Open an existing state for CTDB without resetting counts or creating a cache.
-	pub(super) fn read_existing(toc: &Toc, track: Track, opts: &RipOptions)
-	-> Result<Option<Self>, RipRipError> {
-		let path = state_path(toc, track).map_err(|_| RipRipError::Cache)?;
-		match path.try_exists() {
-			Ok(false) => Ok(None),
-			Err(_) => Err(RipRipError::StateCorrupt(track.number())),
-			Ok(true) => {
-				let opts = opts.with_resume(true).with_reset(false);
-				let state = Self::new_inner(toc, track, &opts, Some(&path))?;
-				Ok(Some(state))
-			},
-		}
-	}
-
-	/// Initialize with the normal state path or a required read-only source.
-	fn new_inner(toc: &Toc, track: Track, opts: &RipOptions, source: Option<&Path>)
-	-> Result<Self, RipRipError> {
 		let disc_rng = accessible_range(toc, opts.offset())
 			.ok_or(RipRipError::RipOverflow)?;
 		let mut out = Self {
@@ -159,7 +141,7 @@ impl RipState {
 			data: Vec::new(),
 			new: true,
 		};
-		out.init(track, opts, source)?;
+		out.init(track, opts)?;
 		Ok(out)
 	}
 
@@ -177,7 +159,7 @@ impl RipState {
 	pub(crate) fn replace(&mut self, track: Track, opts: &RipOptions)
 	-> Result<(), RipRipError> {
 		if self.track == track { Ok(()) }
-		else { self.init(track, opts, None) }
+		else { self.init(track, opts) }
 	}
 
 	/// # Initialize.
@@ -189,8 +171,7 @@ impl RipState {
 	/// This will return an error if the numbers can't fit in the necessary
 	/// integer types, the cache is invalid, or the cache is corrupt and the
 	/// user opts not to start over.
-	fn init(&mut self, track: Track, opts: &RipOptions, source: Option<&Path>)
-	-> Result<(), RipRipError> {
+	fn init(&mut self, track: Track, opts: &RipOptions) -> Result<(), RipRipError> {
 		use std::io::Read;
 
 		// Assume this is new until we learn differently.
@@ -214,11 +195,8 @@ impl RipState {
 		// Load it from a previous session?
 		if opts.resume() {
 			let idx = track.number();
-			let file = if let Some(source) = source {
-				Some(File::open(source).map_err(|_| RipRipError::StateCorrupt(idx))?)
-			}
-			else { File::open(state_path(&self.toc, track)?).ok() };
-			if let Some(file) = file {
+			let src = state_path(&self.toc, track)?;
+			if let Ok(file) = File::open(src) {
 				let mut file = BufReader::with_capacity(BUFFER_SIZE, file);
 
 				// Magic header.
@@ -319,6 +297,7 @@ impl RipState {
 				sector.serialize_into(v, &mut buf).ok_or(RipRipError::StateSave(idx))?;
 			}
 		}
+
 		// Save the tmpfile to dst.
 		writer.finish()
 	}
@@ -339,30 +318,6 @@ impl RipState {
 		write_wave(&dst, data.iter().map(RipSample::as_array))?;
 		Ok(dst)
 	}
-}
-
-/// Write a complete WAV atomically using the usual rip export format.
-pub(super) fn write_wave(dst: &Path, data: impl ExactSizeIterator<Item = Sample>)
--> Result<(), RipRipError> {
-	use std::io::Write;
-	let write_error = || RipRipError::Write(dst.to_string_lossy().into_owned());
-	let data_len = u32::try_from(data.len()).ok()
-		.and_then(|n| n.checked_mul(u32::from(BYTES_PER_SAMPLE))).ok_or_else(write_error)?;
-	let file_len = data_len.checked_add(44 - 8).ok_or_else(write_error)?;
-
-	let mut writer = CacheWriter::new(dst)?;
-	{
-		let mut buf = BufWriter::with_capacity(BUFFER_SIZE, writer.writer());
-		let mut header = WAVE_HEADER;
-		header[4..8].copy_from_slice(&file_len.to_le_bytes());
-		header[40..].copy_from_slice(&data_len.to_le_bytes());
-		buf.write_all(&header).map_err(|_| write_error())?;
-		for sample in data {
-			buf.write_all(&sample).map_err(|_| write_error())?;
-		}
-		buf.flush().map_err(|_| write_error())?;
-	}
-	writer.finish()
 }
 
 impl RipState {
@@ -535,4 +490,53 @@ fn track_rng_to_rip_range(track: Track) -> Option<Range<i32>> {
 			.and_then(|n| n.checked_mul(i32::from(SAMPLES_PER_SECTOR)))
 			.and_then(|n| n.checked_add(i32::from(SAMPLE_OVERREAD)))?;
 	Some(rng)
+}
+
+#[expect(clippy::cast_possible_truncation, reason = "False positive.")]
+/// # Write WAV.
+///
+/// Write a complete WAV atomically using the usual rip export format.
+pub(super) fn write_wave(dst: &Path, data: impl ExactSizeIterator<Item = Sample>)
+-> Result<(), RipRipError> {
+	use std::io::Write;
+
+	const {
+		// We cast to u32 below and subtract eight. Let's prove the size is
+		// what it's supposed to be, since the declaration is ~500 lines
+		// earlier. Haha.
+		assert!(WAVE_HEADER.len() == 44, "BUG: `WAVE_HEADER` length != 44?");
+	}
+
+	// Save some typing. Haha.
+	let write_error = || RipRipError::Write(dst.to_string_lossy().into_owned());
+
+	// Byte length of the data portion.
+	let data_len = u32::try_from(data.len()).ok()
+		.and_then(|n| n.checked_mul(u32::from(BYTES_PER_SAMPLE)))
+		.ok_or_else(write_error)?;
+
+	// The total file length, except for the MAGIC and the four bytes this
+	// number are going to be written to.
+	let file_len = data_len.checked_add((WAVE_HEADER.len() as u32) - 8)
+		.ok_or_else(write_error)?;
+
+	let mut writer = CacheWriter::new(dst)?;
+	{
+		let mut buf = BufWriter::with_capacity(BUFFER_SIZE, writer.writer());
+
+		// Write the header first.
+		let mut header = WAVE_HEADER;
+		header[4..8].copy_from_slice(&file_len.to_le_bytes());
+		header[40..].copy_from_slice(&data_len.to_le_bytes());
+		buf.write_all(&header).map_err(|_| write_error())?;
+
+		// Now write all the samples.
+		for sample in data {
+			buf.write_all(&sample).map_err(|_| write_error())?;
+		}
+
+		// Done!
+		buf.flush().map_err(|_| write_error())?;
+	}
+	writer.finish()
 }

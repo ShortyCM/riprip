@@ -77,10 +77,13 @@ impl Mode<'_> {
 pub(super) struct Coverage {
 	/// Track samples reachable by the current drive.
 	track: Range<i32>,
+
 	/// The interval confirmed by CTDB.
 	verified: Range<i32>,
+
 	/// Reachable guard samples still needing physical evidence.
 	pub(super) needs_reads: bool,
+
 	/// Verified PCM and the remaining drive evidence.
 	pub(super) quality: super::TrackQuality,
 }
@@ -99,8 +102,10 @@ impl Coverage {
 pub(super) struct Outcome {
 	/// WAVs installed from the verified snapshot.
 	pub(super) tracks: SavedRips,
+
 	/// Sample coverage of the accepted snapshot.
 	pub(super) coverage: BTreeMap<u8, Coverage>,
+
 	/// Confidence of the accepted reference.
 	pub(super) confidence: u16,
 }
@@ -182,44 +187,55 @@ impl Audio {
 
 		for (idx, (track, &len)) in toc.audio_tracks().zip(lengths).enumerate() {
 			if killed.killed() { return Err("calculation cancelled".into()); }
+
 			let start = quality.len();
 			boundaries.push(start);
+
 			let state = if mode.allows(track, opts) {
-				RipState::read_existing(toc, track, opts).map_err(|err| err.to_string())?
+				RipState::new(
+					toc,
+					track,
+					&opts.with_resume(true).with_reset(false),
+				).map_err(|err| err.to_string())?
 			}
-			else { None };
-			let Some(state) = state else {
+			else {
 				missing += 1;
 				pcm.resize(pcm.len() + 2 * len, 0);
 				quality.resize(start + len, Quality::Erasure);
 				continue;
 			};
+
 			let samples = state.track_slice();
 			if samples.len() != len { return Err("saved track length differs from the disc".into()); }
 			let (ar, ctdb) = verify_track(track, &state);
 			let trusted_ar = ar.is_some_and(|(a, b)| a.max(b) >= min_conf);
 			let trusted_ctdb = ctdb.is_some_and(|confidence| confidence >= u16::from(min_conf));
 			for (at, sample) in samples.iter().enumerate() {
-				pcm.extend(sample.as_array().as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes));
+				pcm.extend_from_slice(sample.as_pair().as_slice());
+
 				let ar_margin = 5 * usize::from(SAMPLES_PER_SECTOR) + 1;
-				let in_ar = (idx != 0 || at >= ar_margin) &&
+				let in_ar =
+					(idx != 0 || at >= ar_margin) &&
 					(idx + 1 != lengths.len() || at + ar_margin < len);
 				let ctdb_left = if idx == 0 { STRIDE * 2 } else { STRIDE };
 				let ctdb_right = if idx + 1 == lengths.len() { trim_end + STRIDE } else { STRIDE };
 				let in_ctdb = at >= ctdb_left && at + ctdb_right < len;
-				quality.push(if (trusted_ar && in_ar) || (trusted_ctdb && in_ctdb) {
-					Quality::Trusted
-				}
-				else if sample.is_bad() || matches!(sample, RipSample::Lead) { Quality::Erasure }
-				else if sample.is_likely(rereads) { Quality::Likely }
-				else { Quality::Weak });
+				quality.push(
+					if (trusted_ar && in_ar) || (trusted_ctdb && in_ctdb) { Quality::Trusted }
+					else if sample.is_bad() || matches!(sample, RipSample::Lead) { Quality::Erasure }
+					else if sample.is_likely(rereads) { Quality::Likely }
+					else { Quality::Weak }
+				);
 			}
+
 			let padded = state.rip_slice();
 			let padding = (padded.len() - len) / 2;
-			for (at, sample) in padded[..padding].iter().enumerate()
+			for (at, sample) in padded[..padding].iter()
+				.enumerate()
 				.chain(padded[padding + len..].iter().enumerate().map(|(at, s)| (at + padding + len, s)))
 			{
-				if let Some(frame) = (start + at).checked_sub(padding) &&
+				if
+					let Some(frame) = (start + at).checked_sub(padding) &&
 					frame < frames &&
 					matches!(sample, RipSample::Maybe(_)) && sample.is_likely(rereads)
 				{
@@ -235,8 +251,11 @@ impl Audio {
 			let (frame, bytes) = candidates[0];
 			// Keep alternate reads inside the region every supported
 			// alignment can verify before exporting the reconstructed copy.
-			if frame >= 2 * STRIDE && frame + trim_end + STRIDE < frames &&
-				quality[frame] == Quality::Erasure && candidates.iter().all(|&(_, x)| x == bytes)
+			if
+				frame >= 2 * STRIDE &&
+				frame + trim_end + STRIDE < frames &&
+				quality[frame] == Quality::Erasure &&
+				candidates.iter().all(|&(_, x)| x == bytes)
 			{
 				if pcm_frame([pcm[2 * frame], pcm[2 * frame + 1]]) != bytes {
 					overlap_changes.push(frame);
@@ -246,6 +265,7 @@ impl Audio {
 				quality[frame] = Quality::Likely;
 			}
 		}
+
 		Ok(Self { pcm, quality, boundaries, missing, overlap_changes })
 	}
 }

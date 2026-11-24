@@ -91,7 +91,7 @@ pub(crate) struct Ripper<'a> {
 	/// # Total Sectors (across all passes, plus one)
 	total: NonZeroU32,
 
-	/// Number of passes actually started.
+	/// # Number of passes actually started.
 	passes_run: u8,
 
 	/// Verified WAVs produced for tracks outside the requested physical reads.
@@ -187,16 +187,21 @@ impl<'a> Ripper<'a> {
 		// Before we run through the passes, let's set up the initial quality,
 		// etc. But only if we're resuming.
 		if self.opts.resume() {
+			let mut already = 0;
+			let mut verified = 0;
 			for entry in self.tracks.values_mut() {
 				if
 					! killed.killed() &&
 					state_path(toc, entry.track).is_ok_and(|s| s.is_file())
 				{
+					already += 1;
 					state.replace(entry.track, &self.opts)?;
 					if entry.preverify(&state, &self.opts)? {
 						let _res = share.progress.push_msg(happy_track_msg(entry.track));
 						progress.increment_n(entry.sectors * u32::from(self.opts.passes()));
+						verified += 1;
 					}
+					else if entry.track.is_htoa() { verified += 1; }
 				}
 
 				progress.increment();
@@ -206,16 +211,24 @@ impl<'a> Ripper<'a> {
 			// during this pass if applicable.
 			self.opts = self.opts.with_reset(false);
 
-			// Fully saved audio can be repaired before another drive pass.
-			if let Some(session) = &mut ctdb &&
-				toc.audio_tracks().all(|track| state_path(toc, track).is_ok_and(|path| path.is_file()))
+			// If all tracks have gone through at least one rip pass, but one
+			// or more aren't yet verified, try to repair them before moving
+			// on.
+			if
+				already == toc.audio_len() &&
+				verified < already &&
+				let Some(session) = &mut ctdb &&
+				! killed.killed()
 			{
 				self.try_ctdb(session, resume, 0, progress, killed);
 				checked_states = true;
 			}
-			if let Some(first_track) = self.tracks.values().find(|entry| !entry.skippable()) {
+
+			// Reset the first track to the one we'll actually be ripping.
+			if let Some(first_track) = self.tracks.values().find(|entry| ! entry.skippable()) {
 				state.replace(first_track.track, &self.opts)?;
 			}
+			// Nothing? Great!
 			else {
 				progress.finish();
 				return Ok(());
@@ -265,8 +278,8 @@ impl<'a> Ripper<'a> {
 				}
 			}
 
-			if let Some(session) = &mut ctdb && !killed.killed() {
-				if !checked_states || self.tracks.values().any(|entry| entry.pass_saved && !entry.track.is_htoa()) {
+			if let Some(session) = &mut ctdb && ! killed.killed() {
+				if ! checked_states || self.tracks.values().any(|entry| entry.pass_saved && ! entry.track.is_htoa()) {
 					self.try_ctdb(session, resume, pass, progress, killed);
 					checked_states = true;
 				}
@@ -336,18 +349,38 @@ impl<'a> Ripper<'a> {
 
 impl Ripper<'_> {
 	/// Verify the current snapshot and drop future reads of verified audio.
-	fn try_ctdb(&mut self, session: &mut ctdb::Session, resume: bool, pass: u8,
-		progress: &Progless, killed: KillSwitch) {
-		let unavailable: Vec<_> = self.tracks.values().filter_map(|entry| {
-			(!entry.state_saved.unwrap_or(resume)).then_some(entry.track.number())
-		}).collect();
-		let refresh: Vec<_> = self.tracks.values().filter_map(|entry| {
-			(entry.pass_saved && entry.ctdb_coverage.is_some()).then_some(entry.track.number())
-		}).collect();
+	fn try_ctdb(
+		&mut self,
+		session: &mut ctdb::Session,
+		resume: bool,
+		pass: u8,
+		progress: &Progless,
+		killed: KillSwitch,
+	) {
+		let unavailable: Vec<_> = self.tracks.values()
+			.filter_map(|entry|
+				(! entry.state_saved.unwrap_or(resume))
+					.then_some(entry.track.number())
+			)
+			.collect();
+
+		let refresh: Vec<_> = self.tracks.values()
+			.filter_map(|entry|
+				(entry.pass_saved && entry.ctdb_coverage.is_some())
+					.then_some(entry.track.number())
+			)
+			.collect();
+
 		let toc = self.disc.toc();
 		progress.set_title(Some(Msg::new(("Verifying", AnsiColor::Misc199), "Checking CTDB repair…")));
-		let mut outcome = session.check(toc, &self.opts.with_resume(resume), killed,
-			ctdb::Mode::Repair { unavailable: &unavailable, refresh: &refresh });
+
+		let mut outcome = session.check(
+			toc,
+			&self.opts.with_resume(resume),
+			killed,
+			ctdb::Mode::Repair { unavailable: &unavailable, refresh: &refresh },
+		);
+
 		let passes_left = u32::from(self.opts.passes() - pass);
 		for (&number, entry) in &mut self.tracks {
 			let was_skippable = entry.skippable();
@@ -358,14 +391,19 @@ impl Ripper<'_> {
 			}
 			if let Some(coverage) = outcome.coverage.remove(&number) {
 				entry.ctdb = Some(outcome.confidence);
-				if !entry.quality.1.is_confirmed() { entry.quality.1 = coverage.quality; }
+				if ! entry.quality.1.is_confirmed() {
+					entry.quality.1 = coverage.quality;
+				}
 				entry.ctdb_coverage = Some(coverage);
-				if entry.dst.is_none() { entry.dst = crate::cache::track_path(toc, entry.track).ok(); }
+				if entry.dst.is_none() {
+					entry.dst = crate::cache::track_path(toc, entry.track).ok();
+				}
 			}
-			if !was_skippable && entry.skippable() {
+			if ! was_skippable && entry.skippable() {
 				progress.increment_n(passes_left * entry.sectors);
 			}
 		}
+
 		self.repaired.extend(outcome.tracks);
 	}
 

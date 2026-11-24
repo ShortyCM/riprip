@@ -4,7 +4,10 @@
 Install verified PCM at the normal WAV paths and recognize it on resume.
 */
 
-use cdtoc::{Toc, Track};
+use cdtoc::{
+	Toc,
+	Track,
+};
 use crate::{
 	CACHE_SCRATCH,
 	KillSwitch,
@@ -185,7 +188,11 @@ fn wave_crc(path: &Path) -> io::Result<u32> {
 
 /// Use the same disc and track numbering as the rest of the rip cache.
 fn marker_path(toc: &Toc, track: Track) -> Result<PathBuf, crate::RipRipError> {
-	cache_path(format!("{CACHE_SCRATCH}/{}__{:02}.ctdb", cache_prefix(toc), track.number()))
+	cache_path(format!(
+		"{CACHE_SCRATCH}/{}__{:02}.ctdb",
+		cache_prefix(toc),
+		track.number(),
+	))
 }
 
 /// Disambiguate discs that share a cache name.
