@@ -115,9 +115,6 @@ UNUSUAL SETTINGS:"), ansi!((dim, violet) "
                       rips, otherwise the default should be fine. Haha.
                       [default: 3; range: 1..=10]", ansi!((dim, violet) "
                       ---------------------------------------------------------"), "
-        --ctdb-assess Assess CTDB repair using saved rip states without writing
-                      files or reading audio from the drive.", ansi!((dim, violet) "
-                      ---------------------------------------------------------"), "
         --ctdb-repair Try CTDB repair before and between physical passes.
                       Apply verified repairs and skip the covered reads.", ansi!((dim, violet) "
                       ---------------------------------------------------------"), "

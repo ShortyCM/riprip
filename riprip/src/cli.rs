@@ -25,7 +25,6 @@ pub(super) type Parsed = (
 	bool,
 	bool,
 	bool,
-	bool,
 );
 
 
@@ -35,7 +34,6 @@ pub(super) type Parsed = (
 pub(super) fn parse() -> Result<Parsed, RipRipError> {
 	argyle::argue! {
 		Backward       "--backward"    "--backwards",
-		CtdbAssess     "--ctdb-assess",
 		CtdbRepair     "--ctdb-repair",
 		FlipFlop       "--flip-flop",
 		Help      "-h" "--help",
@@ -61,7 +59,6 @@ pub(super) fn parse() -> Result<Parsed, RipRipError> {
 	}
 
 	let mut opts = RipOptions::default();
-	let mut assess = false;
 	let mut no_metadata = false;
 	let mut no_rip = false;
 	let mut no_summary = false;
@@ -74,7 +71,6 @@ pub(super) fn parse() -> Result<Parsed, RipRipError> {
 	for arg in Argument::args_os() {
 		match arg {
 			Argument::Backward =>   { opts = opts.with_backwards(true); },
-			Argument::CtdbAssess => { assess = true; },
 			Argument::CtdbRepair => { opts = opts.with_ctdb_repair(true); },
 			Argument::FlipFlop =>   { opts = opts.with_flip_flop(true); },
 			Argument::NoMetadata => { no_metadata = true; },
@@ -133,8 +129,8 @@ pub(super) fn parse() -> Result<Parsed, RipRipError> {
 		}
 	}
 
-	if (opts.ctdb_repair() && (assess || status || no_rip)) || (assess && status) {
-		return Err(RipRipError::CliParse("conflicting --ctdb-repair, --ctdb-assess, --status, or --no-rip options"));
+	if opts.ctdb_repair() && (status || no_rip) {
+		return Err(RipRipError::CliParse("conflicting --ctdb-repair, --status, or --no-rip options"));
 	}
 
 	// Enable logging as early as possible.
@@ -144,7 +140,7 @@ pub(super) fn parse() -> Result<Parsed, RipRipError> {
 	}
 
 	// Figure out the disc and drive.
-	let disc = Disc::new(dev, ! no_metadata && !assess)?;
+	let disc = Disc::new(dev, ! no_metadata)?;
 	let drivevendormodel = disc.drive_vendor_model();
 	if level.is_some() {
 		if let Some(v) = drivevendormodel {
@@ -182,7 +178,6 @@ pub(super) fn parse() -> Result<Parsed, RipRipError> {
 		no_rip,
 		no_summary,
 		status,
-		assess,
 	))
 }
 

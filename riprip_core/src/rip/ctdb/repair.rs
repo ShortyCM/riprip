@@ -100,50 +100,6 @@ impl<const S: u16> Geometry<S> {
 
 
 
-#[derive(Default)]
-/// # Lane Load.
-///
-/// This struct holds the interleaved lane load for a particular pressing
-/// alignment.
-pub(super) struct Capacity {
-	/// # Maximum Erasures.
-	///
-	/// The largest number of known locations among the lanes.
-	pub(super) max_erasures: usize,
-
-	/// # Maximum Suspect Locations.
-	///
-	/// Largest number of suspect locations, including the known erasures.
-	pub(super) max_suspect: usize,
-
-	/// # Maximum Error/Erasures.
-	///
-	/// Largest error/erasure budget assuming every suspect frame is wrong.
-	pub(super) max_mixed_cost: usize,
-
-	/// # Total Lane Cap.
-	///
-	/// Lanes whose known erasures alone would exceed the parity budget.
-	pub(super) lanes_over_erasures: usize,
-
-	/// # Unknown Lane Cap.
-	///
-	/// Lanes that would exceed the budget without erasure information.
-	pub(super) lanes_over_unknowns: usize,
-
-	/// # Known Lane Cap.
-	///
-	/// Lanes that would exceed the budget even with the known locations.
-	pub(super) lanes_over_mixed: usize,
-
-	/// # Outside Frames.
-	///
-	/// Suspect stereo frames beyond either edge of the protected window.
-	pub(super) outside: usize,
-}
-
-
-
 #[derive(Clone, Eq, PartialEq)]
 /// # Repair Details.
 ///
@@ -335,28 +291,6 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 			for (hint, &quality) in hints.iter_mut().zip(quality) { hint.remember(row, quality); }
 		}
 		Some(Self { geometry, pcm, quality, syndromes, hints })
-	}
-
-	/// # Calculate Lane Load.
-	///
-	/// Assess the hard erasure and unknown-error bounds separately.
-	pub(super) fn capacity(&self, offset: isize, roots: usize) -> Capacity {
-		let mut out = Capacity::default();
-		for lane in 0..usize::from(Self::STRIDE.get()) {
-			self.with_hints(lane, offset, |hint| {
-				out.max_erasures = out.max_erasures.max(hint.erasures);
-				out.max_suspect = out.max_suspect.max(hint.suspects);
-				let mixed_cost = hint.erasures + 2 * (hint.suspects - hint.erasures);
-				out.max_mixed_cost = out.max_mixed_cost.max(mixed_cost);
-				out.lanes_over_erasures += 2 * usize::from(hint.erasures > roots);
-				out.lanes_over_unknowns += 2 * usize::from(hint.suspects > roots / 2);
-				out.lanes_over_mixed += 2 * usize::from(mixed_cost > roots);
-			});
-		}
-		let window = self.geometry.window(offset);
-		out.outside = self.quality[..window.start].iter().chain(&self.quality[window.end..])
-			.filter(|&&quality| matches!(quality, Quality::Weak | Quality::Erasure)).count();
-		out
 	}
 
 	#[expect(clippy::cast_possible_wrap, reason = "False positive.")]

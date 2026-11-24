@@ -50,8 +50,6 @@ const STRIDE: usize = 10 * SAMPLES_PER_SECTOR as usize;
 #[derive(Clone, Copy)]
 /// The caller's authorization to install verified repairs.
 pub(super) enum Mode<'a> {
-	/// Calculate and report results without writing any files.
-	Assess,
 	/// Publish verified results, excluding stale states from this rip.
 	Repair {
 		/// Selected tracks with unavailable or stale state files.
@@ -65,8 +63,8 @@ impl Mode<'_> {
 	/// Choose sources consistent with the normal rip's resume setting.
 	fn allows(self, track: Track, opts: &RipOptions) -> bool {
 		match self {
-			Self::Assess => true,
-			Self::Repair { unavailable, .. } => !unavailable.contains(&track.number()) &&
+			Self::Repair { unavailable, .. } =>
+				! unavailable.contains(&track.number()) &&
 				(opts.resume() || opts.tracks().any(|n| n == track.number())),
 		}
 	}
@@ -126,8 +124,13 @@ impl Session {
 	}
 
 	/// Validate and publish the currently saved evidence, if possible.
-	pub(super) fn check(&mut self, toc: &Toc, opts: &RipOptions, killed: KillSwitch, mode: Mode<'_>)
-	-> Outcome {
+	pub(super) fn check(
+		&mut self,
+		toc: &Toc,
+		opts: &RipOptions,
+		killed: KillSwitch,
+		mode: Mode<'_>,
+	) -> Outcome {
 		if killed.killed() { return Outcome::default(); }
 		match run_inner(self, toc, opts, killed, mode) {
 			Ok(outcome) => outcome,
@@ -137,13 +140,6 @@ impl Session {
 			},
 		}
 	}
-}
-
-
-
-/// Run a standalone, read-only assessment.
-pub(crate) fn assess(toc: &Toc, opts: &RipOptions, killed: KillSwitch) {
-	let _ = Session::new().check(toc, opts, killed, Mode::Assess);
 }
 
 
@@ -165,8 +161,13 @@ struct Audio {
 impl Audio {
 	/// Assemble INDEX 01 through audio lead-out. RipState has already applied
 	/// the drive offset. For unread boundaries, reuse strong adjacent overreads.
-	fn load(toc: &Toc, opts: &RipOptions, lengths: &[usize], mode: Mode<'_>, killed: KillSwitch)
-	-> Result<Self, String> {
+	fn load(
+		toc: &Toc,
+		opts: &RipOptions,
+		lengths: &[usize],
+		mode: Mode<'_>,
+		killed: KillSwitch,
+	) -> Result<Self, String> {
 		let frames = lengths.iter().sum();
 		let mut pcm = Vec::new();
 		let mut quality = Vec::new();
@@ -259,7 +260,6 @@ fn run_inner(
 	killed: KillSwitch,
 	mode: Mode<'_>,
 ) -> Result<Outcome, String> {
-	let assess = matches!(mode, Mode::Assess);
 	let lengths: Vec<_> = toc.audio_tracks().map(|track| {
 		usize::try_from(track.duration().samples()).map_err(|_| "unsupported track length")
 	}).collect::<Result<_, _>>()?;
@@ -280,9 +280,6 @@ fn run_inner(
 	}
 	let Some(entries) = session.entries.as_deref().filter(|entries| !entries.is_empty())
 	else { return Ok(Outcome::default()); };
-	if assess && toc.htoa().is_some() {
-		eprintln!("CTDB repair — the first-track pregap is outside CTDB coverage");
-	}
 	if !toc.audio_tracks().any(|track| {
 		mode.allows(track, opts) &&
 			state_path(toc, track).is_ok_and(|path| path.is_file())
@@ -317,15 +314,19 @@ fn run_inner(
 				matches_tracks(&audio.pcm, e, geometry.window(offset), offset, &[]))
 				.map(|entry| (offset, entry))
 		});
-		if !assess && let Some((offset, entry)) = already_verified {
+		if let Some((offset, entry)) = already_verified {
 			(entry, Repair { offset, corrections: Vec::new() })
 		}
 		else {
-			if !assess && max_roots == 0 { return Err("no usable CTDB parity".into()); }
+			if max_roots == 0 { return Err("no usable CTDB parity".into()); }
 			let snapshot = Snapshot::new(geometry, &audio.pcm, &audio.quality, max_roots, killed)
 				.ok_or("calculation cancelled")?;
-			let Some(candidate) = find_repair(&snapshot, entries, &mut session.parity, assess,
-				already_verified.is_some(), killed)?
+			let Some(candidate) = find_repair(
+				&snapshot,
+				entries,
+				&mut session.parity,
+				killed,
+			)?
 			else { return Ok(Outcome::default()); };
 			candidate
 		}
@@ -336,7 +337,7 @@ fn run_inner(
 	if outside != 0 {
 		eprintln!("CTDB repair — {outside} uncertain stereo frames lie outside verified coverage");
 	}
-	let Mode::Repair { refresh, .. } = mode else { return Ok(Outcome::default()); };
+	let Mode::Repair { refresh, .. } = mode;
 	let tracks = output::publish(toc, killed, &audio, &repair, window.clone(), entry.confidence, refresh)?;
 	eprintln!("CTDB repair — verified {} corrected channel words at offset {:+} frames",
 		repair.corrections.len(), repair.offset);
@@ -379,62 +380,45 @@ fn track_coverage(toc: &Toc, opts: &RipOptions, audio: &Audio, window: Range<usi
 }
 
 /// Evaluate eligible parity records and require agreement on the corrected PCM.
-fn find_repair<'a>(snapshot: &Snapshot<'_>, entries: &'a [lookup::Entry],
+fn find_repair<'a>(
+	snapshot: &Snapshot<'_>,
+	entries: &'a [lookup::Entry],
 	parity_cache: &mut BTreeMap<u64, Result<Vec<u16>, String>>,
-	assess: bool, mut unchanged: bool, killed: KillSwitch)
--> Result<Option<(&'a lookup::Entry, Repair)>, String> {
+	killed: KillSwitch,
+) -> Result<Option<(&'a lookup::Entry, Repair)>, String> {
 	let mut verified: Option<(&lookup::Entry, Repair)> = None;
 	let mut ambiguous = false;
 	for entry in entries {
 		if killed.killed() { return Err("calculation cancelled".into()); }
-		let advertised = entry.reference.len();
 		let label = format!("{:08x} (record {}, confidence {})", entry.disc_crc, entry.id, entry.confidence);
 		if entry.parity_url.is_none() {
-			if assess { eprintln!("  {label} — no supported full parity record"); }
 			continue;
 		}
 		let parity = match parity_cache.entry(entry.id).or_insert_with(|| lookup::parity(entry)) {
 			Ok(data) => data,
 			Err(err) => {
 				eprintln!("  {label} — {err}");
-				if assess {
-					eprintln!("    CTDB advertised {advertised} syndrome rows.");
-					report_capacity(snapshot, advertised, 0, "assuming zero offset");
-				}
 				continue;
 			},
 		};
-		let npar = parity.len() / (STRIDE * 2);
 		let repair = match snapshot.find(entry, parity, killed) {
 			Ok(repair) => repair,
 			Err(Rejection::Cancelled) => return Err("calculation cancelled".into()),
 			Err(reason) => {
 				eprintln!("  {label} — {}", reason.description());
 				ambiguous |= reason == Rejection::Ambiguous;
-				if assess { report_capacity(snapshot, npar, 0, "assuming zero offset"); }
 				continue;
 			},
 		};
 
-		if assess {
-			eprintln!("  {label} — CRC-verified at offset {:+} frames, {} changed channel words",
-				repair.offset, repair.corrections.len());
-			report_capacity(snapshot, npar, repair.offset, "verified alignment");
-		}
-		if repair.corrections.is_empty() && !assess { return Ok(Some((entry, repair))); }
-		if repair.corrections.is_empty() {
-			unchanged = true;
-		}
-		else if let Some((_, current)) = &verified {
+		if repair.corrections.is_empty() { return Ok(Some((entry, repair))); }
+
+		if let Some((_, current)) = &verified {
 			ambiguous |= current.corrections != repair.corrections;
 		}
 		else { verified = Some((entry, repair)); }
 	}
 
-	if unchanged {
-		eprintln!("CTDB repair — saved audio already matches a qualifying CTDB record");
-		return Ok(None);
-	}
 	if ambiguous { return Err("CTDB records or offsets imply different verified corrections".into()); }
 	verified.map(Some).ok_or_else(|| "no CRC-verified repair at the requested confidence".into())
 }
@@ -444,29 +428,4 @@ const fn pcm_frame(words: [u16; 2]) -> [u8; 4] {
 	let [a, b] = words[0].to_le_bytes();
 	let [c, d] = words[1].to_le_bytes();
 	[a, b, c, d]
-}
-
-/// Report the Reed–Solomon bound alongside the measured distribution.
-fn report_capacity(snapshot: &Snapshot<'_>, roots: usize, offset: isize, alignment: &str) {
-	let limits = snapshot.capacity(offset, roots);
-	let unknown = roots / 2;
-	eprintln!("    {roots} syndrome rows per lane, up to {unknown} unknown errors or {roots} erasures");
-	eprintln!("    {alignment}: peak {} suspected and {} known erasures in one lane",
-		limits.max_suspect, limits.max_erasures);
-	eprintln!("    peak mixed cost {} (2 × unknowns + erasures), {} lanes exceed {roots}",
-		limits.max_mixed_cost, limits.lanes_over_mixed);
-	eprintln!("    {} lanes exceed the all-unknown bound, {} exceed the known-erasure bound, {} uncertain frames outside coverage",
-		limits.lanes_over_unknowns, limits.lanes_over_erasures, limits.outside);
-	if limits.lanes_over_erasures != 0 {
-		eprintln!("    Recovery cannot be guaranteed if every reported erasure is wrong.");
-	}
-	else if limits.lanes_over_mixed != 0 {
-		eprintln!("    Recovery depends on some suspect frames being correct or being located as erasures.");
-	}
-	else if limits.lanes_over_unknowns != 0 {
-		eprintln!("    The observed suspects fit when the reported erasure positions are used.");
-	}
-	else {
-		eprintln!("    The observed suspect positions fit the theoretical unknown-error bound.");
-	}
 }

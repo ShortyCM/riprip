@@ -153,9 +153,6 @@ fn interleaved_sectors_and_pressing_offsets() {
 		damaged[2 * (split + 127)] ^= 0x080d;
 		let snapshot = Snapshot::new(geometry, &damaged, &flags, 8, kill_switch())
 			.expect("test snapshot");
-		let capacity = snapshot.capacity(offset, 8);
-		assert_eq!(capacity.max_erasures, 1, "a sector spans distinct codewords");
-		assert_eq!(capacity.lanes_over_unknowns, 0, "damage fits across lanes");
 		let repair = snapshot.find(&entry, &parity, kill_switch())
 			.expect("verified reconstruction");
 		assert_eq!(repair.offset, offset, "pressing offset");
@@ -193,8 +190,6 @@ fn errors_erasures_and_mixed_capacity_boundaries() {
 			MAX_PARITY,
 			kill_switch(),
 		).expect("test snapshot");
-		let capacity = snapshot.capacity(0, MAX_PARITY);
-		assert_eq!(capacity.max_erasures, erasures, "same-lane concentration");
 		let repair = snapshot.find(&entry, &parity, kill_switch());
 		assert_eq!(
 			repair.is_ok(),
@@ -233,7 +228,6 @@ fn checksum_and_protected_samples_gate_acceptance() {
 	flags[52] = Quality::Erasure;
 	let snapshot = Snapshot::new(geometry, &damaged, &flags, 8, kill_switch())
 		.expect("test snapshot");
-	assert_eq!(snapshot.capacity(0, 8).outside, 1, "report an uncovered drive error");
 	entry.disc_crc ^= 1;
 	assert_eq!(
 		snapshot.find(&entry, &parity, kill_switch()).err(),
