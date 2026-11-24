@@ -1,5 +1,16 @@
-//! Deterministic corruption cases with independent reference syndromes.
+/*!
+# Rip Rip Hooray: Repair Tests.
+*/
 
+use crate::{
+	KillSwitch,
+	SAMPLES_PER_SECTOR,
+};
+use std::sync::{
+	Arc,
+	atomic::AtomicBool,
+	LazyLock,
+};
 use super::{
 	lookup::Entry,
 	pcm_frame,
@@ -12,15 +23,16 @@ use super::{
 	},
 	rs::MAX_PARITY,
 };
-use crate::KillSwitch;
-use std::sync::{
-	Arc,
-	atomic::AtomicBool,
-	LazyLock,
-};
 
+
+
+/// # Pseudo Killswitch Bool.
 static ACTIVE: LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
-const SECTOR: usize = 588;
+
+/// # Samples Per Sector.
+const SECTOR: usize = SAMPLES_PER_SECTOR as usize;
+
+
 
 /// # Get Kill Switch.
 fn kill_switch() -> KillSwitch { KillSwitch::from(&*ACTIVE) }
@@ -111,6 +123,8 @@ fn record<const S: u16>(
 		parity_url: None,
 	}
 }
+
+
 
 #[test]
 /// A whole-sector burst straddles a track boundary and one interleave wrap.

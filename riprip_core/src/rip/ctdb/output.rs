@@ -1,4 +1,8 @@
-//! Install verified PCM at the normal WAV paths and recognize it on resume.
+/*!
+# Rip Rip Hooray: Repair Output.
+
+Install verified PCM at the normal WAV paths and recognize it on resume.
+*/
 
 use cdtoc::{Toc, Track};
 use crate::{

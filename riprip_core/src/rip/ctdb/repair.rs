@@ -1,4 +1,6 @@
-//! Interleaving, pressing offsets, and CRC verification for CTDB repair.
+/*!
+# Rip Rip Hooray: Repair (Interleaving, Offsets, and CRC)
+*/
 
 use super::{
 	lookup::Entry,
@@ -14,32 +16,49 @@ use std::{
 	ops::Range,
 };
 
-/// One quality classification per stereo frame in a recovery snapshot.
+
+
 #[derive(Clone, Copy, Eq, PartialEq)]
+/// One quality classification per stereo frame in a recovery snapshot.
 pub(super) enum Quality {
+	/// # Trusted.
+	///
 	/// Independently verified by the existing per-track verifier.
 	Trusted,
 
+	/// # Likely.
+	///
 	/// Repeated physical reads agreed.
 	Likely,
 
+	/// # Weak.
+	///
 	/// A physical candidate exists, but lacks a qualifying majority.
 	Weak,
 
+	/// # Erasure.
+	///
 	/// The drive reported C2, or a frame could not be read.
 	Erasure,
 }
 
+
+
 #[expect(clippy::cast_possible_truncation, reason = "False positive.")]
-/// The interval that CTDB covers and its shortened RS dimensions.
 #[derive(Clone, Copy)]
+/// # Repair Geometry.
+///
+/// This struct holds the interval that CTDB covers and its shortened RS
+/// dimensions.
 pub(super) struct Geometry<const S: u16 = { super::STRIDE as u16 }> {
-	/// Number of complete protected rows.
+	/// # Number of Complete Protected Rows.
 	rows: NonZeroU16,
 }
 
 impl<const S: u16> Geometry<S> {
 	/// # Stride.
+	///
+	/// The number of stereo samples per row.
 	pub(super) const STRIDE: NonZeroU16 = NonZeroU16::new(S).unwrap();
 
 	/// # Lanes.
@@ -48,7 +67,10 @@ impl<const S: u16> Geometry<S> {
 	pub(super) const LANES: NonZeroU16 = NonZeroU16::new(2 * S).unwrap();
 
 	#[expect(clippy::cast_possible_truncation, reason = "False positive.")]
-	/// Determine the number of full protected rows in the audio image.
+	/// # New.
+	///
+	/// Determine the number of full protected rows in the audio image, given
+	/// the stride and total frame count.
 	pub(super) const fn new(frames: usize) -> Option<Self> {
 		const {
 			assert!(S != 0 && S <= 5880, "BUG: geometry stride must be 1..=5880.");
@@ -67,58 +89,94 @@ impl<const S: u16> Geometry<S> {
 	/// # Rows.
 	pub(super) const fn rows(self) -> NonZeroU16 { self.rows }
 
-	/// Protected range shifted in local audio coordinates.
+	/// # Protected Range.
+	///
+	/// Return the sector range after an offset is applied.
 	pub(super) const fn window(self, offset: isize) -> Range<usize> {
 		let start = (S as usize).saturating_add_signed(offset);
 		start..start + (self.rows().get() as usize) * (S as usize)
 	}
 }
 
-/// Interleaved lane load for a particular pressing alignment.
+
+
 #[derive(Default)]
+/// # Lane Load.
+///
+/// This struct holds the interleaved lane load for a particular pressing
+/// alignment.
 pub(super) struct Capacity {
-	/// Largest number of known locations among the lanes.
+	/// # Maximum Erasures.
+	///
+	/// The largest number of known locations among the lanes.
 	pub(super) max_erasures: usize,
 
+	/// # Maximum Suspect Locations.
+	///
 	/// Largest number of suspect locations, including the known erasures.
 	pub(super) max_suspect: usize,
 
+	/// # Maximum Error/Erasures.
+	///
 	/// Largest error/erasure budget assuming every suspect frame is wrong.
 	pub(super) max_mixed_cost: usize,
 
+	/// # Total Lane Cap.
+	///
 	/// Lanes whose known erasures alone would exceed the parity budget.
 	pub(super) lanes_over_erasures: usize,
 
+	/// # Unknown Lane Cap.
+	///
 	/// Lanes that would exceed the budget without erasure information.
 	pub(super) lanes_over_unknowns: usize,
 
+	/// # Known Lane Cap.
+	///
 	/// Lanes that would exceed the budget even with the known locations.
 	pub(super) lanes_over_mixed: usize,
 
+	/// # Outside Frames.
+	///
 	/// Suspect stereo frames beyond either edge of the protected window.
 	pub(super) outside: usize,
 }
 
-/// A CRC-verified set of XOR corrections in original, drive-corrected coordinates.
+
+
 #[derive(Clone, Eq, PartialEq)]
+/// # Repair Details.
+///
+/// This struct holds a CRC-verified set of XOR corrections in original,
+/// drive-corrected coordinates.
 pub(super) struct Repair {
 	/// Pressing alignment in stereo frames.
 	pub(super) offset: isize,
+
 	/// Word positions in the local audio image and their XOR changes.
 	pub(super) corrections: Vec<(usize, u16)>,
 }
 
-/// Furthest validation reached without obtaining a unique repair.
+
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// # Repair State Errors.
+///
+/// This enum is used to qualify the furthest validation reached without
+/// obtaining a unique repair.
 pub(super) enum Rejection {
 	/// No alignment passed the sampled codeword checks.
 	Alignment,
+
 	/// The candidate could not correct every lane while preserving trusted words.
 	Codeword,
+
 	/// A complete decoding disagreed with the published checksums.
 	Checksum,
+
 	/// Two alignments yielded distinct checksum-verified changes.
 	Ambiguous,
+
 	/// The caller cancelled the work.
 	Cancelled,
 }
@@ -136,26 +194,40 @@ impl Rejection {
 	}
 }
 
-/// A codeword's known erasures and all uncertain positions, capped for decoding.
+
+
 #[derive(Default, Clone, Copy)]
+/// # Lane Hints.
+///
+/// A codeword's known erasures and all uncertain positions, capped for
+/// decoding.
 struct LaneHints {
 	/// Leading known-erasure rows, kept up to the decoding budget.
 	erased: [usize; MAX_PARITY + 2],
+
 	/// Leading suspect rows, including possible erasures.
 	suspect: [usize; MAX_PARITY + 2],
+
 	/// Total known-erasure count including positions omitted above.
 	erasures: usize,
+
 	/// Total suspect count including positions omitted above.
 	suspects: usize,
 }
 
-/// Ordering for credible location hints when a lane has several decodes.
+
+
 #[derive(Clone, Copy)]
+/// # Ordering Hints.
+///
+/// Ordering for credible location hints when a lane has several decodes.
 enum Hints {
 	/// Prefer C2 and unread positions.
 	Known,
+
 	/// Prefer correcting without erasures, in case C2 over-reported.
 	Unknown,
+
 	/// Prefer treating all low-quality positions as located erasures.
 	Suspect,
 }
@@ -205,8 +277,12 @@ impl LaneHints {
 	}
 }
 
+
+
 #[expect(clippy::cast_possible_truncation, reason = "False positive.")]
-/// The reusable unshifted syndromes and quality distribution of one snapshot.
+/// # Repair State Snapshot.
+///
+/// The reusable, unshifted syndromes and quality distribution of one snapshot.
 pub(super) struct Snapshot<'a, const S: u16 = { super::STRIDE as u16 }> {
 	/// Image dimensions and protected window.
 	geometry: Geometry<S>,
@@ -231,6 +307,8 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 	/// # Lanes.
 	const LANES: NonZeroU16 = Geometry::<S>::LANES;
 
+	/// # New Instance.
+	///
 	/// Evaluate each unshifted lane once, independent of the lookup entries.
 	pub(super) fn new(
 		geometry: Geometry<S>,
@@ -259,6 +337,8 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 		Some(Self { geometry, pcm, quality, syndromes, hints })
 	}
 
+	/// # Calculate Lane Load.
+	///
 	/// Assess the hard erasure and unknown-error bounds separately.
 	pub(super) fn capacity(&self, offset: isize, roots: usize) -> Capacity {
 		let mut out = Capacity::default();
@@ -280,6 +360,8 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 	}
 
 	#[expect(clippy::cast_possible_wrap, reason = "False positive.")]
+	/// # Find Alignment.
+	///
 	/// Find an alignment whose corrections satisfy the published checksums.
 	pub(super) fn find(&self, entry: &Entry, reference: &[u16], killed: KillSwitch)
 	-> Result<Repair, Rejection> {
@@ -322,6 +404,8 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 		verified.ok_or(reason)
 	}
 
+	/// # Make Candidate!
+	///
 	/// Assemble a complete candidate at one alignment.
 	fn solve(&self, offset: isize, reference: &[u16], hints: Hints, killed: KillSwitch)
 	-> Option<Vec<(usize, u16)>> {
@@ -344,8 +428,16 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 		Some(corrections)
 	}
 
-	/// Re-index a lane at a pressing offset using the unshifted recovery statistics.
-	fn with_hints<T>(&self, frame: usize, offset: isize, f: impl FnOnce(&LaneHints) -> T) -> T {
+	/// # Re-Index w/ Hints.
+	///
+	/// Re-index a lane at a pressing offset using the unshifted recovery
+	/// statistics.
+	fn with_hints<T>(
+		&self,
+		frame: usize,
+		offset: isize,
+		f: impl FnOnce(&LaneHints) -> T,
+	) -> T {
 		let shifted = usize::from(Self::STRIDE.get())
 			.checked_add_signed(offset)
 			.expect("offset within one stride")
@@ -359,9 +451,18 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 			self.quality[usize::from(Self::STRIDE.get()) + lane], self.quality[end], self.quality[end + usize::from(Self::STRIDE.get())]))
 	}
 
+	/// # Decode Lane.
+	///
 	/// Recover one lane without modifying the underlying samples.
-	fn decode_lane(&self, lane: usize, offset: isize, reference: &[u16],
-		roots: usize, hint: &LaneHints, order: Hints) -> Option<Vec<(usize, u16)>> {
+	fn decode_lane(
+		&self,
+		lane: usize,
+		offset: isize,
+		reference: &[u16],
+		roots: usize,
+		hint: &LaneHints,
+		order: Hints,
+	) -> Option<Vec<(usize, u16)>> {
 		let window = self.geometry.window(offset);
 		let start = window.start * 2 + lane;
 		let first_frame = start / 2;
@@ -387,6 +488,8 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 		})
 	}
 
+	/// # Shfit Syndrome.
+	///
 	/// Evaluate the shifted lane by dropping and adding its edge terms.
 	fn shifted_syndrome(&self, root: usize, start: usize) -> u16 {
 		let lane = start % usize::from(Self::LANES.get());
@@ -405,9 +508,18 @@ impl<'a, const S: u16> Snapshot<'a, S> {
 	}
 }
 
+
+
+/// # Matches Tracks?
+///
 /// Check every published track CRC in the pressing's track coordinates.
-pub(super) fn matches_tracks(pcm: &[u16], entry: &Entry, window: Range<usize>, offset: isize,
-	corrections: &[(usize, u16)]) -> bool {
+pub(super) fn matches_tracks(
+	pcm: &[u16],
+	entry: &Entry,
+	window: Range<usize>,
+	offset: isize,
+	corrections: &[(usize, u16)],
+) -> bool {
 	entry.checks.iter().all(|(track, expected)| {
 		let start = if track.start == 0 { Some(window.start) }
 		else { track.start.checked_add_signed(offset) };
@@ -419,6 +531,8 @@ pub(super) fn matches_tracks(pcm: &[u16], entry: &Entry, window: Range<usize>, o
 	})
 }
 
+/// # CRC by Offset.
+///
 /// Calculate the clean-audio CRC for each alignment without rescanning the disc.
 pub(super) fn unchanged_crcs<const S: u16>(
 	pcm: &[u16],
@@ -458,14 +572,18 @@ pub(super) fn unchanged_crcs<const S: u16>(
 	}).collect()
 }
 
+/// # CRC with Corrections.
+///
 /// Stream a checksummed interval with the proposed corrections applied.
-pub(super) fn checksum(pcm: &[u16], range: Range<usize>, corrections: &[(usize, u16)]) -> u32 {
+pub(super) fn checksum(pcm: &[u16], range: Range<usize>, corrections: &[(usize, u16)])
+-> u32 {
 	let mut crc = Hasher::new();
 	let mut buffer = [0; 8192];
 	let first = range.start * 2;
 	let end = range.end * 2;
 	let mut changes = corrections[corrections.partition_point(|&(word, _)| word < first)..]
-		.iter().peekable();
+		.iter()
+		.peekable();
 	for (block, symbols) in pcm[first..end].chunks(buffer.len() / 2).enumerate() {
 		let start = first + block * (buffer.len() / 2);
 		for (i, (&symbol, bytes)) in symbols.iter().zip(buffer.as_chunks_mut::<2>().0).enumerate() {

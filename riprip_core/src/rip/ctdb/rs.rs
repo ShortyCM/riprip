@@ -1,8 +1,10 @@
 /*!
-# Rip Rip Hooray: Reed–Solomon decoding over CTDB's GF(2^16).
+# Rip Rip Hooray: Repair (Reed–Solomon, Berlekamp–Massey, etc.)
 */
 
 use std::num::NonZeroU16;
+
+
 
 /// # Number of Nonzero Field Elements.
 const ORDER: usize = u16::MAX as usize;
@@ -50,7 +52,11 @@ static LOG: [u16; ORDER + 1] = {
 	log
 };
 
+
+
 /// # Field Arithmetic With Primitive Element 2.
+///
+/// This "struct" simply wraps several methods under a convenient umbrella.
 pub(super) struct Field;
 
 impl Field {

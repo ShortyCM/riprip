@@ -1,4 +1,6 @@
-//! CTDB v3 lookup and syndrome records.
+/*!
+# Rip Rip Hooray: Lookup and Syndrome.
+*/
 
 use crate::{
 	cache_path,
@@ -13,24 +15,35 @@ use cdtoc::{
 use std::ops::Range;
 use super::STRIDE;
 
+
+
 /// Number of interleaved 16-bit words per stride.
 const LANES: usize = STRIDE * 2;
+
+
 
 /// A database pressing and its available reference data.
 pub(super) struct Entry {
 	/// CTDB's numeric entry ID.
 	pub(super) id: u64,
+
 	/// Number of submissions behind this checksum.
 	pub(super) confidence: u16,
+
 	/// CRC of the record's protected audio window.
 	pub(super) disc_crc: u32,
+
 	/// Track CRCs in the record's INDEX 01 coordinates.
 	pub(super) checks: Vec<(Range<usize>, u32)>,
+
 	/// Advertised syndromes for the first channel lane.
 	pub(super) reference: Vec<u16>,
+
 	/// HTTPS path of the full syndrome record, when available.
 	pub(super) parity_url: Option<String>,
 }
+
+
 
 /// Reuse the normal verifier's cached lookup. A read-only caller can use this
 /// path even when the rip cache has never been created.
@@ -102,6 +115,8 @@ pub(super) fn parity(entry: &Entry) -> Result<Vec<u16>, String> {
 fn words(bytes: &[u8]) -> Vec<u16> {
 	bytes.as_chunks::<2>().0.iter().copied().map(u16::from_le_bytes).collect()
 }
+
+
 
 #[cfg(test)]
 mod tests {

@@ -1,11 +1,15 @@
-//! Opt-in CTDB assessment and recovery of saved, drive-corrected PCM.
+/*!
+# Rip Rip Hooray: Repair!
+*/
 
 mod lookup;
 pub(super) mod output;
 mod repair;
 mod rs;
-#[cfg(test)]
-mod tests;
+
+#[cfg(test)] mod tests;
+
+
 
 use crate::{
 	KillSwitch,
@@ -41,8 +45,10 @@ use super::verify_track;
 /// The standard CTDB stride in stereo frames.
 const STRIDE: usize = 10 * SAMPLES_PER_SECTOR as usize;
 
-/// The caller's authorization to install verified repairs.
+
+
 #[derive(Clone, Copy)]
+/// The caller's authorization to install verified repairs.
 pub(super) enum Mode<'a> {
 	/// Calculate and report results without writing any files.
 	Assess,
@@ -66,8 +72,10 @@ impl Mode<'_> {
 	}
 }
 
-/// Confirmed coverage for one track, in drive-corrected disc coordinates.
+
+
 #[derive(Clone)]
+/// Confirmed coverage for one track, in drive-corrected disc coordinates.
 pub(super) struct Coverage {
 	/// Track samples reachable by the current drive.
 	track: Range<i32>,
@@ -86,6 +94,8 @@ impl Coverage {
 	}
 }
 
+
+
 /// Publication and the work that can be skipped after the verification.
 #[derive(Default)]
 pub(super) struct Outcome {
@@ -96,6 +106,8 @@ pub(super) struct Outcome {
 	/// Confidence of the accepted reference.
 	pub(super) confidence: u16,
 }
+
+
 
 /// Keep lookup results and downloads for one rip so successive passes reuse them.
 pub(super) struct Session {
@@ -127,10 +139,14 @@ impl Session {
 	}
 }
 
+
+
 /// Run a standalone, read-only assessment.
 pub(crate) fn assess(toc: &Toc, opts: &RipOptions, killed: KillSwitch) {
 	let _ = Session::new().check(toc, opts, killed, Mode::Assess);
 }
+
+
 
 /// One consistent, contiguous audio image from the saved track states.
 struct Audio {
@@ -232,6 +248,8 @@ impl Audio {
 		Ok(Self { pcm, quality, boundaries, missing, overlap_changes })
 	}
 }
+
+
 
 /// Install a unique verified repair at the normal rip paths.
 fn run_inner(
@@ -421,6 +439,13 @@ fn find_repair<'a>(snapshot: &Snapshot<'_>, entries: &'a [lookup::Entry],
 	verified.map(Some).ok_or_else(|| "no CRC-verified repair at the requested confidence".into())
 }
 
+/// Encode one stereo frame in WAV byte order.
+const fn pcm_frame(words: [u16; 2]) -> [u8; 4] {
+	let [a, b] = words[0].to_le_bytes();
+	let [c, d] = words[1].to_le_bytes();
+	[a, b, c, d]
+}
+
 /// Report the Reed–Solomon bound alongside the measured distribution.
 fn report_capacity(snapshot: &Snapshot<'_>, roots: usize, offset: isize, alignment: &str) {
 	let limits = snapshot.capacity(offset, roots);
@@ -444,11 +469,4 @@ fn report_capacity(snapshot: &Snapshot<'_>, roots: usize, offset: isize, alignme
 	else {
 		eprintln!("    The observed suspect positions fit the theoretical unknown-error bound.");
 	}
-}
-
-/// Encode one stereo frame in WAV byte order.
-const fn pcm_frame(words: [u16; 2]) -> [u8; 4] {
-	let [a, b] = words[0].to_le_bytes();
-	let [c, d] = words[1].to_le_bytes();
-	[a, b, c, d]
 }
