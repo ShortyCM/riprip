@@ -34,10 +34,10 @@ pub(super) type Parsed = (
 pub(super) fn parse() -> Result<Parsed, RipRipError> {
 	argyle::argue! {
 		Backward       "--backward"    "--backwards",
-		CtdbRepair     "--ctdb-repair",
 		FlipFlop       "--flip-flop",
 		Help      "-h" "--help",
 		NoMetadata     "--no-metadata" "--no-meta",
+		NoCtdbRepair   "--no-ctdb-repair",
 		NoResume       "--no-resume",
 		NoRip          "--no-rip",
 		NoSummary      "--no-summary",
@@ -70,18 +70,18 @@ pub(super) fn parse() -> Result<Parsed, RipRipError> {
 	let mut verbosity = 0_u8;
 	for arg in Argument::args_os() {
 		match arg {
-			Argument::Backward =>   { opts = opts.with_backwards(true); },
-			Argument::CtdbRepair => { opts = opts.with_ctdb_repair(true); },
-			Argument::FlipFlop =>   { opts = opts.with_flip_flop(true); },
-			Argument::NoMetadata => { no_metadata = true; },
-			Argument::NoResume =>   { opts = opts.with_resume(false); },
-			Argument::NoRip =>      { no_rip = true; },
-			Argument::NoSummary =>  { no_summary = true; },
-			Argument::Reset =>      { opts = opts.with_reset(true); },
-			Argument::Status =>     { status = true; },
-			Argument::Strict =>     { opts = opts.with_strict(true); },
-			Argument::Sync =>       { opts = opts.with_sync(true); },
-			Argument::Verbose =>    {
+			Argument::Backward =>     { opts = opts.with_backwards(true); },
+			Argument::FlipFlop =>     { opts = opts.with_flip_flop(true); },
+			Argument::NoMetadata =>   { no_metadata = true; },
+			Argument::NoCtdbRepair => { opts = opts.with_ctdb_repair(false); },
+			Argument::NoResume =>     { opts = opts.with_resume(false); },
+			Argument::NoRip =>        { no_rip = true; },
+			Argument::NoSummary =>    { no_summary = true; },
+			Argument::Reset =>        { opts = opts.with_reset(true); },
+			Argument::Status =>       { status = true; },
+			Argument::Strict =>       { opts = opts.with_strict(true); },
+			Argument::Sync =>         { opts = opts.with_sync(true); },
+			Argument::Verbose => {
 				verbosity += 1;
 				opts = opts.with_verbose(true);
 			},

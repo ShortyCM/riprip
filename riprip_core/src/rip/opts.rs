@@ -18,31 +18,31 @@ use super::track_idx_to_bits;
 
 
 /// # FLAG: Read Backwards.
-const FLAG_BACKWARDS: u8 =  0b0000_0001;
+const FLAG_BACKWARDS: u8 =   0b0000_0001;
 
 /// # FLAG: Flip Flop.
-const FLAG_FLIP_FLOP: u8 =  0b0000_0010;
+const FLAG_FLIP_FLOP: u8 =   0b0000_0010;
 
 /// # FLAG: Reset counts.
-const FLAG_RESET: u8 =      0b0000_0100;
+const FLAG_RESET: u8 =       0b0000_0100;
 
 /// # FLAG: Resume previous rip (when applicable).
-const FLAG_RESUME: u8 =     0b0000_1000;
+const FLAG_RESUME: u8 =      0b0000_1000;
 
 /// # FLAG: Strict C2 Mode.
-const FLAG_STRICT: u8 =     0b0001_0000;
+const FLAG_STRICT: u8 =      0b0001_0000;
 
 /// # FLAG: Subchannel Sync.
-const FLAG_SYNC: u8 =       0b0010_0000;
+const FLAG_SYNC: u8 =        0b0010_0000;
 
 /// # FLAG: Verbose.
-const FLAG_VERBOSE: u8 =    0b0100_0000;
+const FLAG_VERBOSE: u8 =     0b0100_0000;
 
-/// # FLAG: Attempt CTDB repair after physical reads.
+/// # FLAG: Automatic Repair.
 const FLAG_CTDB_REPAIR: u8 = 0b1000_0000;
 
 /// # FLAG: Default.
-const FLAG_DEFAULT: u8 = FLAG_RESUME;
+const FLAG_DEFAULT: u8 = FLAG_RESUME | FLAG_CTDB_REPAIR;
 
 /// # Minimum Confidence.
 const CONFIDENCE_MIN: u8 = 1;
@@ -149,6 +149,7 @@ impl fmt::Display for RipOptions {
 		}
 		write!(f, "--confidence={} ", self.confidence())?;
 		if self.flip_flop() { f.write_str("--flip-flop ")?; }
+		if ! self.ctdb_repair() { f.write_str("--no-ctdb-repair ")? }
 		if ! self.resume() { f.write_str("--no-resume ")?; }
 
 		let offset = self.offset().samples();

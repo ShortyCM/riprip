@@ -49,6 +49,10 @@ long = "--no-metadata"
 description = "Do not try to read/parse CD-Text, MCN, and track ISRC metadata from the disc. This can speed up initialization, particularly for discs with a lot of damage."
 
 [[package.metadata.bashman.switches]]
+long = "--no-ctdb-repair"
+description = "Do not try to correct complete-but-inaccurate rips using parity data from the CUETools database."
+
+[[package.metadata.bashman.switches]]
 long = "--no-resume"
 description = "Ignore any previous rip states, starting over from scratch."
 

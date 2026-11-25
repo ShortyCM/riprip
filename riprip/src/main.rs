@@ -263,6 +263,7 @@ fn rip_summary(disc: &Disc, opts: &RipOptions) -> Result<(), RipRipError> {
 	let nice_rereads2 =
 		if rr_b == 1 { Cow::Borrowed("Re-Read Contention") }
 		else { Cow::Owned(format!("Re-Read Contention {rr_b}×")) };
+	let nice_repair = Cow::Borrowed(if opts.ctdb_repair() { "Yes" } else { "No" });
 	let nice_sync = Cow::Borrowed("Subchannel Sync");
 	let nice_tracks = Cow::Owned(rip_summary_tracks(opts));
 	let nice_verbose = Cow::Borrowed(if opts.verbose() { "Yes" } else { "No" });
@@ -280,6 +281,7 @@ fn rip_summary(disc: &Disc, opts: &RipOptions) -> Result<(), RipRipError> {
 		("", nice_sync, opts.sync()),
 		("Rip Passes:", nice_passes, true),
 		("Read Order:", nice_read_order, true),
+		("CTDB Repair:", nice_repair, opts.ctdb_repair()),
 		("Verbose:", nice_verbose, opts.verbose()),
 		("Destination:", nice_output, true),
 	];

@@ -115,8 +115,9 @@ UNUSUAL SETTINGS:"), ansi!((dim, violet) "
                       rips, otherwise the default should be fine. Haha.
                       [default: 3; range: 1..=10]", ansi!((dim, violet) "
                       ---------------------------------------------------------"), "
-        --ctdb-repair Try CTDB repair before and between physical passes.
-                      Apply verified repairs and skip the covered reads.", ansi!((dim, violet) "
+        --no-ctdb-repair
+                      Do not try to correct complete-but-inaccurate rips using
+                      parity data from the CUETools database.", ansi!((dim, violet) "
                       ---------------------------------------------------------"), "
         --sync        Confirm sector positioning with subchannel data (when
                       available) to make sure the drive is actually reading
