@@ -187,21 +187,16 @@ impl<'a> Ripper<'a> {
 		// Before we run through the passes, let's set up the initial quality,
 		// etc. But only if we're resuming.
 		if self.opts.resume() {
-			let mut already = 0;
-			let mut verified = 0;
 			for entry in self.tracks.values_mut() {
 				if
 					! killed.killed() &&
 					state_path(toc, entry.track).is_ok_and(|s| s.is_file())
 				{
-					already += 1;
 					state.replace(entry.track, &self.opts)?;
 					if entry.preverify(&state, &self.opts)? {
 						let _res = share.progress.push_msg(happy_track_msg(entry.track));
 						progress.increment_n(entry.sectors * u32::from(self.opts.passes()));
-						verified += 1;
 					}
-					else if entry.track.is_htoa() { verified += 1; }
 				}
 
 				progress.increment();
@@ -215,9 +210,8 @@ impl<'a> Ripper<'a> {
 			// or more aren't yet verified, try to repair them before moving
 			// on.
 			if
-				already == toc.audio_len() &&
-				verified < already &&
 				let Some(session) = &mut ctdb &&
+				toc.audio_tracks().all(|track| state_path(toc, track).is_ok_and(|path| path.is_file())) &&
 				! killed.killed()
 			{
 				self.try_ctdb(session, resume, 0, progress, killed);
