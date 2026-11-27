@@ -129,10 +129,6 @@ pub(super) fn parse() -> Result<Parsed, RipRipError> {
 		}
 	}
 
-	if opts.ctdb_repair() && (status || no_rip) {
-		return Err(RipRipError::CliParse("conflicting --ctdb-repair, --status, or --no-rip options"));
-	}
-
 	// Enable logging as early as possible.
 	let level = LogLog::init(verbosity);
 	if level.is_some() {

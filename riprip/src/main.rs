@@ -160,7 +160,7 @@ fn main__() -> Result<(), RipRipError> {
 	}
 
 	// Go ahead and leave if there's no ripping to do.
-	if no_rip { return Ok(()); }
+	if no_rip && ! status { return Ok(()); }
 
 	// Set up progress and killswitch in case they're needed.
 	let killed = KillSwitch::from(Progless::sigint_keepalive());
